@@ -188,15 +188,18 @@ async function importarPartido(idJornada, partido) {
     const idPartido = pRows[0].id;
 
     // Borrar stats previas del partido (para reimport limpio)
+    const localNorm = normalizeName(acta.equipoLocal.nombre);
+    const visitanteNorm = normalizeName(acta.equipoVisitante.nombre);
     await client.query(
       `DELETE FROM estadisticas
        WHERE id_jornada = $1
          AND id_jugador IN (
            SELECT j.id FROM jugadores j
            JOIN equipos_reales er ON er.id = j.id_equipo_real
-           WHERE UPPER(er.nombre) = UPPER($2) OR UPPER(er.nombre) = UPPER($3)
+           WHERE translate(upper(er.nombre), 'ÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛÃÕÑÇ', 'AEIOUAEIOUAEIOUAEIOUAONC') = $2
+              OR translate(upper(er.nombre), 'ÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛÃÕÑÇ', 'AEIOUAEIOUAEIOUAEIOUAONC') = $3
          )`,
-      [idJornada, acta.equipoLocal.nombre, acta.equipoVisitante.nombre]
+      [idJornada, localNorm, visitanteNorm]
     );
 
     // Insertar estadísticas de ambos equipos
@@ -209,15 +212,21 @@ async function importarPartido(idJornada, partido) {
       for (const j of equipoData.jugadores) {
         if (j.minutosJugados === 0) continue;
 
-        // Buscar jugador en BD por cod_jugador o nombre normalizado
+        // Buscar jugador en BD por cod_jugador o nombre normalizado (sin acentos)
+        const nombreNorm = normalizeName(j.nombre);
+        const equipoNorm = normalizeName(equipoData.nombre);
         const { rows: jRows } = await client.query(
           `SELECT id FROM jugadores
            WHERE (cod_jugador = $1 AND cod_jugador IS NOT NULL)
-              OR (UPPER(nombre) = UPPER($2) AND id_equipo_real IN (
-                SELECT id FROM equipos_reales WHERE UPPER(nombre) = UPPER($3)
-              ))
+              OR (
+                translate(upper(nombre), 'ÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛÃÕÑÇ', 'AEIOUAEIOUAEIOUAEIOUAONC') = $2
+                AND id_equipo_real IN (
+                  SELECT id FROM equipos_reales
+                  WHERE translate(upper(nombre), 'ÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛÃÕÑÇ', 'AEIOUAEIOUAEIOUAEIOUAONC') = $3
+                )
+              )
            LIMIT 1`,
-          [j.id, j.nombre, equipoData.nombre]
+          [j.id, nombreNorm, equipoNorm]
         );
         if (jRows.length === 0) continue;
         const idJugador = jRows[0].id;
@@ -266,6 +275,6 @@ async function importarPartido(idJornada, partido) {
   }
 }
 
-function normalizeName(name) {
+export function normalizeName(name) {
   return (name ?? '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
 }
