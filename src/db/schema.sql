@@ -146,16 +146,29 @@ CREATE TABLE IF NOT EXISTS historial_precios (
 CREATE TABLE IF NOT EXISTS subastas (
   id                  SERIAL PRIMARY KEY,
   id_jugador          INTEGER NOT NULL REFERENCES jugadores(id) ON DELETE CASCADE,
-  id_vendedor         INTEGER NOT NULL REFERENCES equipos_fantasy(id) ON DELETE CASCADE,
+  id_vendedor         INTEGER REFERENCES equipos_fantasy(id) ON DELETE CASCADE,
   precio_minimo       BIGINT NOT NULL,
   fecha_inicio        TIMESTAMPTZ NOT NULL,
-  fecha_cierre        TIMESTAMPTZ NOT NULL,  -- final del día natural
+  fecha_cierre        TIMESTAMPTZ NOT NULL,
+  tipo                VARCHAR(10) NOT NULL DEFAULT 'SISTEMA'
+    CHECK (tipo IN ('SISTEMA', 'USUARIO')),
   estado              VARCHAR(10) NOT NULL DEFAULT 'ACTIVA'
     CHECK (estado IN ('ACTIVA', 'RESUELTA', 'DESIERTA', 'CANCELADA')),
   id_ganador          INTEGER REFERENCES equipos_fantasy(id),
   precio_final        BIGINT,
   creado_en           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS config_mercado (
+  clave               VARCHAR(50) PRIMARY KEY,
+  valor               VARCHAR(100) NOT NULL
+);
+
+INSERT INTO config_mercado (clave, valor) VALUES
+  ('jugadores_por_ventana', '5'),
+  ('hora_apertura', '17'),
+  ('duracion_horas', '24')
+ON CONFLICT (clave) DO NOTHING;
 
 -- ─── Pujas en subastas ───────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pujas (

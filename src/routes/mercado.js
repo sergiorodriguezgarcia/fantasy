@@ -416,10 +416,15 @@ export async function abrirVentanaMercado({ n = 5 } = {}) {
      WHERE tipo = 'SISTEMA' AND estado = 'PENDIENTE'`
   );
 
+  // Solo generar oferta del sistema para jugadores que su dueño ha puesto en subasta activa
   const { rows: propietarios } = await pool.query(
     `SELECT p.id_jugador, p.id_equipo_fantasy, j.precio_actual
      FROM plantillas p
      JOIN jugadores j ON j.id = p.id_jugador
+     JOIN subastas s ON s.id_jugador = p.id_jugador
+                     AND s.id_vendedor = p.id_equipo_fantasy
+                     AND s.tipo = 'USUARIO'
+                     AND s.estado = 'ACTIVA'
      WHERE j.activo = TRUE`
   );
 
