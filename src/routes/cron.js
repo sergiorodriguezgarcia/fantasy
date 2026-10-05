@@ -212,21 +212,23 @@ async function importarPartido(idJornada, partido) {
       for (const j of equipoData.jugadores) {
         if (j.minutosJugados === 0) continue;
 
-        // Buscar jugador en BD por cod_jugador o nombre normalizado (sin acentos)
-        const nombreNorm = normalizeName(j.nombre);
+        // Buscar jugador en BD por cod_jugador o nombre.
+        // El scraper devuelve "APELLIDO1 APELLIDO2, NOMBRE" pero la BD tiene "NOMBRE APELLIDO1".
+        // Generamos todas las combinaciones posibles para hacer match.
         const equipoNorm = normalizeName(equipoData.nombre);
+        const candidatos = generarCombinacionesNombre(j.nombre);
         const { rows: jRows } = await client.query(
           `SELECT id FROM jugadores
            WHERE (cod_jugador = $1 AND cod_jugador IS NOT NULL)
               OR (
-                translate(upper(nombre), 'ÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛÃÕÑÇ', 'AEIOUAEIOUAEIOUAEIOUAONC') = $2
+                translate(upper(nombre), 'ÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛÃÕÑÇ', 'AEIOUAEIOUAEIOUAEIOUAONC') = ANY($2::text[])
                 AND id_equipo_real IN (
                   SELECT id FROM equipos_reales
                   WHERE translate(upper(nombre), 'ÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛÃÕÑÇ', 'AEIOUAEIOUAEIOUAEIOUAONC') = $3
                 )
               )
            LIMIT 1`,
-          [j.id, nombreNorm, equipoNorm]
+          [j.id, candidatos, equipoNorm]
         );
         if (jRows.length === 0) continue;
         const idJugador = jRows[0].id;
@@ -277,4 +279,33 @@ async function importarPartido(idJornada, partido) {
 
 export function normalizeName(name) {
   return (name ?? '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * El scraper devuelve nombres en formato federación: "APELLIDO1 APELLIDO2, NOMBRE"
+ * La BD los tiene como los introdujo el admin: "NOMBRE APELLIDO1" o "NOMBRE APELLIDO1 APELLIDO2"
+ * Genera todas las combinaciones posibles para hacer match.
+ * Ej: "ALDARIZ ALVAREZ, DIEGO" → ["DIEGO ALDARIZ", "DIEGO ALDARIZ ALVAREZ", "DIEGO ALVAREZ", ...]
+ */
+function generarCombinacionesNombre(nombreScraper) {
+  const norm = normalizeName(nombreScraper);
+  if (!norm.includes(',')) return [norm]; // nombre simple tipo "BETO"
+
+  const [apellidosParte, nombresParte] = norm.split(',').map(s => s.trim());
+  const apellidosTokens = apellidosParte.split(' ').filter(Boolean);
+  const nombresTokens = nombresParte.split(' ').filter(Boolean);
+
+  const combinaciones = new Set();
+  // Combinación completa invertida: "NOMBRE1 NOMBRE2 APELLIDO1 APELLIDO2"
+  combinaciones.add(`${nombresParte} ${apellidosParte}`);
+
+  // Combinaciones parciales: cada nombre con cada subconjunto de apellidos
+  for (const nombre of nombresTokens) {
+    combinaciones.add(nombre);
+    for (let i = 1; i <= apellidosTokens.length; i++) {
+      combinaciones.add(`${nombre} ${apellidosTokens.slice(0, i).join(' ')}`);
+    }
+  }
+
+  return [...combinaciones];
 }
