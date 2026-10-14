@@ -31,6 +31,93 @@ export async function equiposRoutes(app) {
     return { ...ef, jugadores };
   });
 
+  // POST /api/equipos/mi-equipo/vender — vender un jugador al instante por su precio actual
+  app.post('/mi-equipo/vender', { preHandler: app.authenticate }, async (req, reply) => {
+    const { id_jugador } = req.body ?? {};
+    if (!id_jugador) return reply.code(400).send({ error: 'id_jugador requerido' });
+
+    const { rows: ef } = await pool.query(
+      `SELECT id FROM equipos_fantasy WHERE id_usuario = $1`, [req.user.id]
+    );
+    if (ef.length === 0) return reply.code(404).send({ error: 'No tienes equipo' });
+    const idEf = ef[0].id;
+
+    const { rows: plant } = await pool.query(
+      `SELECT p.id, j.nombre, j.precio_actual
+       FROM plantillas p
+       JOIN jugadores j ON j.id = p.id_jugador
+       WHERE p.id_equipo_fantasy = $1 AND p.id_jugador = $2`,
+      [idEf, id_jugador]
+    );
+    if (plant.length === 0) return reply.code(404).send({ error: 'Jugador no encontrado en tu plantilla' });
+    const { nombre, precio_actual } = plant[0];
+    const monto = parseInt(precio_actual);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Quitar de la plantilla
+      await client.query(
+        `DELETE FROM plantillas WHERE id_equipo_fantasy = $1 AND id_jugador = $2`,
+        [idEf, id_jugador]
+      );
+
+      // Ingresar el dinero al vendedor
+      await client.query(
+        `UPDATE equipos_fantasy SET saldo_disponible = saldo_disponible + $1 WHERE id = $2`,
+        [monto, idEf]
+      );
+
+      // Cancelar subastas activas del jugador y devolver pujas bloqueadas
+      const { rows: subActivas } = await client.query(
+        `SELECT id FROM subastas WHERE id_jugador = $1 AND estado = 'ACTIVA'`, [id_jugador]
+      );
+      for (const sub of subActivas) {
+        const { rows: pujas } = await client.query(
+          `SELECT id_equipo_fantasy, monto FROM pujas WHERE id_subasta = $1`, [sub.id]
+        );
+        for (const puja of pujas) {
+          await client.query(
+            `UPDATE equipos_fantasy
+             SET saldo_disponible = saldo_disponible + $1, saldo_bloqueado = saldo_bloqueado - $1
+             WHERE id = $2`,
+            [puja.monto, puja.id_equipo_fantasy]
+          );
+        }
+        await client.query(`UPDATE subastas SET estado = 'DESIERTA' WHERE id = $1`, [sub.id]);
+      }
+
+      // Expirar y desbloquear ofertas pendientes de otros compradores por este jugador
+      const { rows: ofertasPend } = await client.query(
+        `SELECT id, id_equipo_comprador, monto, tipo FROM ofertas
+         WHERE id_jugador = $1 AND estado = 'PENDIENTE'`, [id_jugador]
+      );
+      for (const o of ofertasPend) {
+        if (o.tipo === 'USUARIO' && o.id_equipo_comprador) {
+          await client.query(
+            `UPDATE equipos_fantasy
+             SET saldo_disponible = saldo_disponible + $1, saldo_bloqueado = saldo_bloqueado - $1
+             WHERE id = $2`,
+            [o.monto, o.id_equipo_comprador]
+          );
+        }
+      }
+      await client.query(
+        `UPDATE ofertas SET estado = 'EXPIRADA' WHERE id_jugador = $1 AND estado = 'PENDIENTE'`,
+        [id_jugador]
+      );
+
+      await client.query('COMMIT');
+      return { ok: true, monto, mensaje: `${nombre} vendido por ${monto.toLocaleString()}€` };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+
   // PUT /api/equipos/mi-equipo — actualizar nombre del equipo
   app.put('/mi-equipo', { preHandler: app.authenticate }, async (req, reply) => {
     const { nombre } = req.body ?? {};
