@@ -150,17 +150,10 @@ export async function mercadoRoutes(app) {
       return reply.code(400).send({ error: 'No puedes pujar en tu propia subasta' });
     }
 
-    // Verificar que el monto supera el mínimo y la puja más alta actual
-    const { rows: maxPuja } = await pool.query(
-      `SELECT COALESCE(MAX(monto), 0) AS max_monto FROM pujas WHERE id_subasta = $1`,
-      [idSubasta]
-    );
-    const pujaActual = Math.max(parseInt(maxPuja[0].max_monto), subasta.precio_minimo);
-    const pujaMinima = pujaActual + 100_000; // incremento mínimo 100K
-
-    if (monto < pujaMinima) {
+    // Verificar que el monto supera el precio mínimo de la subasta (basado en el valor del jugador)
+    if (monto < subasta.precio_minimo) {
       return reply.code(400).send({
-        error: `La puja mínima es ${pujaMinima.toLocaleString()}€ (actual: ${pujaActual.toLocaleString()}€ + 100.000€)`,
+        error: `La puja mínima es ${parseInt(subasta.precio_minimo).toLocaleString()}€`,
       });
     }
 
