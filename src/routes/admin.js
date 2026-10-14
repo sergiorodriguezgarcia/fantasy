@@ -14,6 +14,8 @@ import { pool } from '../db/pool.js';
 import { calcularPuntosJornada, calcularPuntos } from '../services/puntos.js';
 import { actualizarPrecios } from '../services/precios.js';
 import { abrirVentanaMercado } from './mercado.js';
+import { fetchJornada, fetchActa } from '../scraper/fetcher.js';
+import { parseJornada, parseActa } from '../scraper/parser.js';
 
 export async function adminRoutes(app) {
 
@@ -220,6 +222,183 @@ export async function adminRoutes(app) {
     }
     await pool.query(`UPDATE jornadas SET estado = $1 WHERE id = $2`, [estado, id]);
     return { ok: true };
+  });
+
+  // POST /api/admin/jornadas/:numero/importar-scraper — scrape jornada desde asturfutbol.es
+  // Crea la jornada si no existe, importa partidos y estadísticas.
+  // Query param opcional: ?calcular=1 para calcular puntos al terminar.
+  app.post('/jornadas/:numero/importar-scraper', { preHandler: app.requireAdmin }, async (req, reply) => {
+    const numJornada = parseInt(req.params.numero);
+    if (isNaN(numJornada) || numJornada < 1) {
+      return reply.code(400).send({ error: 'numero de jornada inválido' });
+    }
+    const calcularDespues = req.query.calcular === '1' || req.query.calcular === 'true';
+
+    // 1. Scrape lista de partidos de la jornada
+    let htmlJornada;
+    try {
+      htmlJornada = await fetchJornada(numJornada);
+    } catch (err) {
+      return reply.code(502).send({ error: `Error al conectar con asturfutbol.es: ${err.message}` });
+    }
+
+    const { partidos } = parseJornada(htmlJornada);
+    const jugados = partidos.filter(p => p.jugado);
+
+    if (jugados.length === 0) {
+      return reply.code(422).send({
+        error: 'No hay partidos jugados en esta jornada todavía',
+        pendientes: partidos.map(p => ({ local: p.equipoLocal, visitante: p.equipoVisitante, fecha: p.fecha, hora: p.hora })),
+      });
+    }
+
+    // 2. Crear jornada en BD si no existe
+    const { rows: jorRows } = await pool.query(
+      `INSERT INTO jornadas (numero) VALUES ($1) ON CONFLICT (numero) DO UPDATE SET numero = EXCLUDED.numero RETURNING id`,
+      [numJornada]
+    );
+    const idJornada = jorRows[0].id;
+
+    const resumen = { jornada: numJornada, id_jornada: idJornada, partidos_importados: 0, jugadores_no_encontrados: [] };
+
+    // 3. Para cada partido jugado, scrape el acta e importar stats
+    for (const partido of jugados) {
+      let htmlActa;
+      try {
+        htmlActa = await fetchActa(partido.codActa);
+      } catch (err) {
+        resumen.errores = resumen.errores ?? [];
+        resumen.errores.push({ codActa: partido.codActa, error: err.message });
+        continue;
+      }
+
+      const acta = parseActa(htmlActa, partido.codActa);
+      if (!acta.equipoLocal || !acta.equipoVisitante) {
+        resumen.errores = resumen.errores ?? [];
+        resumen.errores.push({ codActa: partido.codActa, error: 'No se pudieron parsear los equipos del acta' });
+        continue;
+      }
+
+      // Calcular goles reales (incluyendo propios)
+      const golesLocal     = acta.equipoLocal.goles.filter(g => !g.esPropio).length
+                           + acta.equipoVisitante.goles.filter(g => g.esPropio).length;
+      const golesVisitante = acta.equipoVisitante.goles.filter(g => !g.esPropio).length
+                           + acta.equipoLocal.goles.filter(g => g.esPropio).length;
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Upsert partido
+        const { rows: pRows } = await client.query(
+          `INSERT INTO partidos
+             (id_jornada, nombre_local, nombre_visitante, goles_local, goles_visitante, cod_acta, fuente, procesado)
+           VALUES ($1, $2, $3, $4, $5, $6, 'scraper', TRUE)
+           ON CONFLICT (id_jornada, nombre_local, nombre_visitante) DO UPDATE
+             SET goles_local     = EXCLUDED.goles_local,
+                 goles_visitante = EXCLUDED.goles_visitante,
+                 procesado       = TRUE
+           RETURNING id`,
+          [idJornada, acta.equipoLocal.nombre, acta.equipoVisitante.nombre,
+           golesLocal, golesVisitante, partido.codActa]
+        );
+        const idPartido = pRows[0].id;
+
+        // Borrar estadísticas previas de ambos equipos en esta jornada (reimport limpio)
+        await client.query(
+          `DELETE FROM estadisticas
+           WHERE id_jornada = $1
+             AND id_jugador IN (
+               SELECT j.id FROM jugadores j
+               JOIN equipos_reales er ON er.id = j.id_equipo_real
+               WHERE UPPER(er.nombre) = UPPER($2) OR UPPER(er.nombre) = UPPER($3)
+             )`,
+          [idJornada, acta.equipoLocal.nombre, acta.equipoVisitante.nombre]
+        );
+
+        // Importar jugadores de ambos equipos
+        for (const equipoActa of [acta.equipoLocal, acta.equipoVisitante]) {
+          const pcero = equipoActa === acta.equipoLocal
+            ? golesVisitante === 0
+            : golesLocal === 0;
+
+          const jugadoresConStats = equipoActa.jugadores.filter(j => j.minutosJugados > 0);
+
+          for (const j of jugadoresConStats) {
+            // Calcular stats individuales del jugador
+            const goles        = equipoActa.goles.filter(g => !g.esPropio && normNombre(g.jugadorNombre) === normNombre(j.nombre)).length;
+            const golesPropio  = equipoActa.goles.filter(g => g.esPropio  && normNombre(g.jugadorNombre) === normNombre(j.nombre)).length;
+            const amarillas    = equipoActa.tarjetas.filter(t => t.tipo === 'amarilla' && normNombre(t.jugadorNombre) === normNombre(j.nombre)).length;
+            const rojas        = equipoActa.tarjetas.filter(t => t.tipo === 'roja'     && normNombre(t.jugadorNombre) === normNombre(j.nombre)).length;
+            // Portería a cero: solo si jugó 90 minutos completos
+            const porteriaCero = pcero && j.minutosJugados >= 90;
+            const golesEncajados = equipoActa === acta.equipoLocal ? golesVisitante : golesLocal;
+
+            // Buscar jugador en BD: primero por cod_jugador (ID de asturfutbol), luego por nombre
+            let idJugador = null;
+            if (j.id) {
+              const { rows: rj } = await client.query(
+                `SELECT id FROM jugadores WHERE cod_jugador = $1 LIMIT 1`, [j.id]
+              );
+              if (rj.length > 0) idJugador = rj[0].id;
+            }
+            if (!idJugador) {
+              const { rows: rj } = await client.query(
+                `SELECT id FROM jugadores WHERE UPPER(nombre) = UPPER($1) LIMIT 1`, [j.nombre.trim()]
+              );
+              if (rj.length > 0) idJugador = rj[0].id;
+            }
+
+            if (!idJugador) {
+              resumen.jugadores_no_encontrados.push({ nombre: j.nombre, equipo: equipoActa.nombre, cod_jugador: j.id ?? null });
+              continue;
+            }
+
+            await client.query(
+              `INSERT INTO estadisticas
+                 (id_jugador, id_jornada, id_partido, minutos_jugados, goles, goles_propio,
+                  amarillas, rojas, porteria_cero, goles_encajados)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               ON CONFLICT (id_jugador, id_jornada) DO UPDATE
+                 SET minutos_jugados = EXCLUDED.minutos_jugados,
+                     goles           = EXCLUDED.goles,
+                     goles_propio    = EXCLUDED.goles_propio,
+                     amarillas       = EXCLUDED.amarillas,
+                     rojas           = EXCLUDED.rojas,
+                     porteria_cero   = EXCLUDED.porteria_cero,
+                     goles_encajados = EXCLUDED.goles_encajados,
+                     id_partido      = EXCLUDED.id_partido`,
+              [idJugador, idJornada, idPartido, j.minutosJugados,
+               goles, golesPropio, amarillas, rojas, porteriaCero, golesEncajados]
+            );
+          }
+        }
+
+        await client.query('COMMIT');
+        resumen.partidos_importados++;
+      } catch (err) {
+        await client.query('ROLLBACK');
+        resumen.errores = resumen.errores ?? [];
+        resumen.errores.push({ codActa: partido.codActa, error: err.message });
+      } finally {
+        client.release();
+      }
+    }
+
+    // 4. Calcular puntos si se pidió y no hubo errores graves
+    if (calcularDespues && resumen.partidos_importados > 0) {
+      try {
+        const puntos = await calcularPuntosJornada(idJornada);
+        await actualizarPrecios(idJornada);
+        await pool.query(`UPDATE jornadas SET estado = 'CALCULADA' WHERE id = $1`, [idJornada]);
+        resumen.puntos_calculados = true;
+        resumen.resumen_puntos = puntos;
+      } catch (err) {
+        resumen.error_calculo = err.message;
+      }
+    }
+
+    return resumen;
   });
 
   // ── Estadísticas manuales de partido ─────────────────────
@@ -611,6 +790,11 @@ export async function adminRoutes(app) {
     }
     return { ok: true };
   });
+}
+
+// ─── Helper: normalizar nombre para comparación ──────────────────────────────
+function normNombre(s) {
+  return (s ?? '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 // ─── Helper: determinar portería a cero de un jugador ────────────────────────
