@@ -221,6 +221,46 @@ export async function equiposRoutes(app) {
     return rows;
   });
 
+  // GET /api/equipos/:id/jornada/:idJornada — puntuación de un equipo rival en una jornada
+  app.get('/:id/jornada/:idJornada', { preHandler: app.authenticate }, async (req, reply) => {
+    const id = parseInt(req.params.id);
+    const idJornada = parseInt(req.params.idJornada);
+    if (isNaN(id) || isNaN(idJornada)) return reply.code(400).send({ error: 'id inválido' });
+
+    const { rows: equipo } = await pool.query(
+      `SELECT ef.id, ef.nombre FROM equipos_fantasy ef WHERE ef.id = $1`, [id]
+    );
+    if (equipo.length === 0) return reply.code(404).send({ error: 'Equipo no encontrado' });
+
+    const { rows: pj } = await pool.query(
+      `SELECT pj.puntos_jornada, pj.puntos_acumulados
+       FROM puntuaciones_jornada pj
+       WHERE pj.id_equipo_fantasy = $1 AND pj.id_jornada = $2`,
+      [id, idJornada]
+    );
+
+    const { rows: detalle } = await pool.query(
+      `SELECT j.id AS id_jugador, j.nombre, j.posicion, er.nombre AS equipo_real,
+              p.es_capitan,
+              e.minutos_jugados, e.goles, e.amarillas, e.rojas, e.porteria_cero,
+              e.puntos AS puntos_base,
+              CASE WHEN p.es_capitan THEN e.puntos * 2 ELSE e.puntos END AS puntos_efectivos
+       FROM plantillas p
+       JOIN jugadores j ON j.id = p.id_jugador
+       LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
+       LEFT JOIN estadisticas e ON e.id_jugador = j.id AND e.id_jornada = $2
+       WHERE p.id_equipo_fantasy = $1
+       ORDER BY p.es_titular DESC, j.posicion, j.nombre`,
+      [id, idJornada]
+    );
+
+    return {
+      puntos_jornada: pj[0]?.puntos_jornada ?? 0,
+      puntos_acumulados: pj[0]?.puntos_acumulados ?? 0,
+      detalle,
+    };
+  });
+
   // GET /api/equipos/:id — plantilla pública de cualquier equipo (sólo titulares + info básica)
   app.get('/:id', { preHandler: app.authenticate }, async (req, reply) => {
     const id = parseInt(req.params.id);

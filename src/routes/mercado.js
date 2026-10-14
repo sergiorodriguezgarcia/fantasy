@@ -3,7 +3,9 @@ import { pool } from '../db/pool.js';
 export async function mercadoRoutes(app) {
 
   // GET /api/mercado/subastas — subastas activas del día
+  // Resuelve subastas vencidas antes de devolver la lista (lazy resolution para Render free tier)
   app.get('/subastas', async () => {
+    await resolverSubastasVencidas();
     const { rows } = await pool.query(
       `SELECT s.id, s.tipo, j.id AS id_jugador, j.nombre AS jugador,
               j.posicion, er.nombre AS equipo_real,
