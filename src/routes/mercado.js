@@ -4,8 +4,14 @@ export async function mercadoRoutes(app) {
 
   // GET /api/mercado/subastas — subastas activas del día
   // Resuelve subastas vencidas antes de devolver la lista (lazy resolution para Render free tier)
-  app.get('/subastas', async () => {
+  app.get('/subastas', { preHandler: app.authenticate }, async (req) => {
     await resolverSubastasVencidas();
+
+    const { rows: ef } = await pool.query(
+      `SELECT id FROM equipos_fantasy WHERE id_usuario = $1`, [req.user.id]
+    );
+    const idEf = ef[0]?.id ?? null;
+
     const { rows } = await pool.query(
       `SELECT s.id, s.tipo, j.id AS id_jugador, j.nombre AS jugador,
               j.posicion, er.nombre AS equipo_real,
@@ -15,13 +21,18 @@ export async function mercadoRoutes(app) {
               (
                 SELECT json_build_object('monto', max(pu.monto), 'total', count(*))
                 FROM pujas pu WHERE pu.id_subasta = s.id
-              ) AS puja_info
+              ) AS puja_info,
+              (
+                SELECT pu.monto FROM pujas pu
+                WHERE pu.id_subasta = s.id AND pu.id_equipo_fantasy = $1
+              ) AS mi_puja
        FROM subastas s
        JOIN jugadores j ON j.id = s.id_jugador
        LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
        LEFT JOIN equipos_fantasy ef_v ON ef_v.id = s.id_vendedor
        WHERE s.estado = 'ACTIVA' AND s.fecha_cierre > NOW()
-       ORDER BY s.tipo DESC, s.fecha_cierre ASC`
+       ORDER BY s.tipo DESC, s.fecha_cierre ASC`,
+      [idEf]
     );
     return rows;
   });
