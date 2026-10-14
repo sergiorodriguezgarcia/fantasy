@@ -264,17 +264,35 @@ export async function adminRoutes(app) {
       porNombre.set(normNombre(j.nombre), j.id);
     }
 
+    // Índice adicional para búsqueda por prefijo: "NOMBRE APELLIDO1" → id
+    // Permite que "RAUL ROMAN CASTELLANOS" encuentre "RAUL ROMAN"
+    const porPrefijo = new Map(); // "NOMBRE APELLIDO1" → id
+    for (const j of todosJugadores) {
+      const palabras = normNombre(j.nombre).split(' ');
+      if (palabras.length >= 2) {
+        const clave = palabras.slice(0, 2).join(' ');
+        if (!porPrefijo.has(clave)) porPrefijo.set(clave, j.id); // solo el primero para evitar ambigüedades
+      }
+    }
+
     function buscarJugador(scraperNombre, scraperCod) {
       // 1) por cod_jugador
       if (scraperCod && porCodJugador.has(String(scraperCod))) {
         return porCodJugador.get(String(scraperCod));
       }
-      // 2) nombre tal cual normalizado
+      // 2) nombre tal cual normalizado (exacto)
       const normOrig = normNombre(scraperNombre);
       if (porNombre.has(normOrig)) return porNombre.get(normOrig);
-      // 3) convirtiendo "APELLIDOS, NOMBRE" → "NOMBRE APELLIDOS"
-      const normConv = normNombre(convertirNombreScraper(scraperNombre));
+      // 3) convirtiendo "APELLIDOS, NOMBRE" → "NOMBRE APELLIDOS" (exacto)
+      const nombreConv = convertirNombreScraper(scraperNombre);
+      const normConv = normNombre(nombreConv);
       if (porNombre.has(normConv)) return porNombre.get(normConv);
+      // 4) prefijo: "NOMBRE APELLIDO1" (la BD puede tener nombre corto y el scraper 2 apellidos)
+      const palabrasConv = normConv.split(' ');
+      if (palabrasConv.length >= 2) {
+        const prefijo = palabrasConv.slice(0, 2).join(' ');
+        if (porPrefijo.has(prefijo)) return porPrefijo.get(prefijo);
+      }
       return null;
     }
 
