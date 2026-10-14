@@ -252,7 +252,33 @@ export async function adminRoutes(app) {
       });
     }
 
-    // 2. Crear jornada en BD si no existe
+    // 2. Cargar todos los jugadores activos para matching por nombre
+    const { rows: todosJugadores } = await pool.query(
+      `SELECT id, nombre, cod_jugador FROM jugadores WHERE activo = TRUE`
+    );
+    // Índice por cod_jugador y por nombre normalizado (soporta "NOMBRE APELLIDOS" ↔ "APELLIDOS, NOMBRE")
+    const porCodJugador = new Map();
+    const porNombre     = new Map();
+    for (const j of todosJugadores) {
+      if (j.cod_jugador) porCodJugador.set(String(j.cod_jugador), j.id);
+      porNombre.set(normNombre(j.nombre), j.id);
+    }
+
+    function buscarJugador(scraperNombre, scraperCod) {
+      // 1) por cod_jugador
+      if (scraperCod && porCodJugador.has(String(scraperCod))) {
+        return porCodJugador.get(String(scraperCod));
+      }
+      // 2) nombre tal cual normalizado
+      const normOrig = normNombre(scraperNombre);
+      if (porNombre.has(normOrig)) return porNombre.get(normOrig);
+      // 3) convirtiendo "APELLIDOS, NOMBRE" → "NOMBRE APELLIDOS"
+      const normConv = normNombre(convertirNombreScraper(scraperNombre));
+      if (porNombre.has(normConv)) return porNombre.get(normConv);
+      return null;
+    }
+
+    // Crear jornada en BD si no existe
     const { rows: jorRows } = await pool.query(
       `INSERT INTO jornadas (numero) VALUES ($1) ON CONFLICT (numero) DO UPDATE SET numero = EXCLUDED.numero RETURNING id`,
       [numJornada]
@@ -334,20 +360,8 @@ export async function adminRoutes(app) {
             const porteriaCero = pcero && j.minutosJugados >= 90;
             const golesEncajados = equipoActa === acta.equipoLocal ? golesVisitante : golesLocal;
 
-            // Buscar jugador en BD: primero por cod_jugador (ID de asturfutbol), luego por nombre
-            let idJugador = null;
-            if (j.id) {
-              const { rows: rj } = await client.query(
-                `SELECT id FROM jugadores WHERE cod_jugador = $1 LIMIT 1`, [j.id]
-              );
-              if (rj.length > 0) idJugador = rj[0].id;
-            }
-            if (!idJugador) {
-              const { rows: rj } = await client.query(
-                `SELECT id FROM jugadores WHERE UPPER(nombre) = UPPER($1) LIMIT 1`, [j.nombre.trim()]
-              );
-              if (rj.length > 0) idJugador = rj[0].id;
-            }
+            // Buscar jugador usando el índice pre-cargado
+            const idJugador = buscarJugador(j.nombre, j.id);
 
             if (!idJugador) {
               resumen.jugadores_no_encontrados.push({ nombre: j.nombre, equipo: equipoActa.nombre, cod_jugador: j.id ?? null });
@@ -385,7 +399,7 @@ export async function adminRoutes(app) {
       }
     }
 
-    // 4. Calcular puntos si se pidió y no hubo errores graves
+    // Calcular puntos si se pidió y no hubo errores graves
     if (calcularDespues && resumen.partidos_importados > 0) {
       try {
         const puntos = await calcularPuntosJornada(idJornada);
@@ -795,6 +809,15 @@ export async function adminRoutes(app) {
 // ─── Helper: normalizar nombre para comparación ──────────────────────────────
 function normNombre(s) {
   return (s ?? '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// ─── Helper: convierte "APELLIDOS, NOMBRE" → "NOMBRE APELLIDOS" ──────────────
+function convertirNombreScraper(nombre) {
+  const partes = nombre.split(',');
+  if (partes.length === 2) {
+    return `${partes[1].trim()} ${partes[0].trim()}`;
+  }
+  return nombre.trim();
 }
 
 // ─── Helper: determinar portería a cero de un jugador ────────────────────────
