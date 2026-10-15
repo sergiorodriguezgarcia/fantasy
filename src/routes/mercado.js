@@ -262,6 +262,56 @@ export async function mercadoRoutes(app) {
     }
   });
 
+  // POST /api/mercado/subastas/:id/retirar-puja — el pujador retira su puja
+  app.post('/subastas/:id/retirar-puja', { preHandler: app.authenticate }, async (req, reply) => {
+    const idSubasta = parseInt(req.params.id);
+
+    const { rows: ef } = await pool.query(
+      `SELECT id FROM equipos_fantasy WHERE id_usuario = $1`, [req.user.id]
+    );
+    if (ef.length === 0) return reply.code(404).send({ error: 'No tienes equipo' });
+    const idEf = ef[0].id;
+
+    const { rows: sub } = await pool.query(
+      `SELECT estado, fecha_cierre FROM subastas WHERE id = $1`, [idSubasta]
+    );
+    if (sub.length === 0) return reply.code(404).send({ error: 'Subasta no encontrada' });
+    if (sub[0].estado !== 'ACTIVA' || new Date(sub[0].fecha_cierre) <= new Date()) {
+      return reply.code(400).send({ error: 'La subasta ya no está activa' });
+    }
+
+    const { rows: puja } = await pool.query(
+      `SELECT monto FROM pujas WHERE id_subasta = $1 AND id_equipo_fantasy = $2`,
+      [idSubasta, idEf]
+    );
+    if (puja.length === 0) return reply.code(404).send({ error: 'No tienes ninguna puja en esta subasta' });
+
+    const monto = parseInt(puja[0].monto);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `DELETE FROM pujas WHERE id_subasta = $1 AND id_equipo_fantasy = $2`,
+        [idSubasta, idEf]
+      );
+      await client.query(
+        `UPDATE equipos_fantasy
+         SET saldo_disponible = saldo_disponible + $1,
+             saldo_bloqueado  = saldo_bloqueado  - $1
+         WHERE id = $2`,
+        [monto, idEf]
+      );
+      await client.query('COMMIT');
+      return { ok: true, mensaje: 'Puja retirada. El saldo ha sido devuelto.' };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+
   // POST /api/mercado/subastas/resolver — (cron job o admin) resuelve subastas cerradas
   // Nota: también llamado por el cron interno del servidor
   app.post('/subastas/resolver', { preHandler: app.requireAdmin }, async () => {
