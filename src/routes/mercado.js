@@ -18,6 +18,7 @@ export async function mercadoRoutes(app) {
               j.precio_actual,
               s.precio_minimo, s.fecha_cierre,
               ef_v.nombre AS vendedor,
+              (s.id_vendedor = $1) AS es_mia,
               (
                 SELECT json_build_object('monto', max(pu.monto), 'total', count(*))
                 FROM pujas pu WHERE pu.id_subasta = s.id
@@ -35,6 +36,54 @@ export async function mercadoRoutes(app) {
       [idEf]
     );
     return rows;
+  });
+
+  // POST /api/mercado/subastas/:id/cancelar — el vendedor cancela su propia subasta
+  app.post('/subastas/:id/cancelar', { preHandler: app.authenticate }, async (req, reply) => {
+    const idSubasta = parseInt(req.params.id);
+
+    const { rows: ef } = await pool.query(
+      `SELECT id FROM equipos_fantasy WHERE id_usuario = $1`, [req.user.id]
+    );
+    if (ef.length === 0) return reply.code(404).send({ error: 'No tienes equipo' });
+    const idEf = ef[0].id;
+
+    const { rows: sub } = await pool.query(
+      `SELECT id, id_vendedor, tipo FROM subastas WHERE id = $1 AND estado = 'ACTIVA'`,
+      [idSubasta]
+    );
+    if (sub.length === 0) return reply.code(404).send({ error: 'Subasta no encontrada o ya cerrada' });
+    if (sub[0].tipo === 'SISTEMA') return reply.code(403).send({ error: 'No puedes cancelar subastas del sistema' });
+    if (sub[0].id_vendedor !== idEf) return reply.code(403).send({ error: 'Solo el vendedor puede cancelar la subasta' });
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Devolver saldo bloqueado a todos los pujadores
+      const { rows: pujas } = await client.query(
+        `SELECT id_equipo_fantasy, monto FROM pujas WHERE id_subasta = $1`, [idSubasta]
+      );
+      for (const puja of pujas) {
+        await client.query(
+          `UPDATE equipos_fantasy
+           SET saldo_disponible = saldo_disponible + $1,
+               saldo_bloqueado  = saldo_bloqueado  - $1
+           WHERE id = $2`,
+          [puja.monto, puja.id_equipo_fantasy]
+        );
+      }
+
+      await client.query(`UPDATE subastas SET estado = 'DESIERTA' WHERE id = $1`, [idSubasta]);
+
+      await client.query('COMMIT');
+      return { ok: true, mensaje: 'Subasta cancelada. Las pujas han sido devueltas.' };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   });
 
   // GET /api/mercado/subastas/:id — detalle de subasta con pujas
