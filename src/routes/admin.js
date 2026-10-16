@@ -683,115 +683,21 @@ export async function adminRoutes(app) {
     }
   });
 
-  // GET /api/admin/activaciones-clausula — lista de activaciones pendientes
-  app.get('/activaciones-clausula', { preHandler: app.requireAdmin }, async () => {
+  // GET /api/admin/clausulazos — historial de cláusulas pagadas
+  app.get('/clausulazos', { preHandler: app.requireAdmin }, async () => {
     const { rows } = await pool.query(
-      `SELECT ac.id, ac.monto_pagado, ac.estado, ac.creado_en,
-              j.nombre AS jugador,
-              ef_c.nombre AS comprador,
-              ef_v.nombre AS vendedor
-       FROM activaciones_clausula ac
-       JOIN plantillas p ON p.id = ac.id_plantilla
-       JOIN jugadores j ON j.id = p.id_jugador
-       JOIN equipos_fantasy ef_c ON ef_c.id = ac.id_comprador
-       JOIN equipos_fantasy ef_v ON ef_v.id = p.id_equipo_fantasy
-       WHERE ac.estado = 'PENDIENTE'
-       ORDER BY ac.creado_en DESC`
+      `SELECT c.id, c.monto, c.periodo_jornada, c.creado_en,
+              j.id AS id_jugador, j.nombre AS jugador, er.nombre AS equipo_real,
+              ef_c.nombre AS comprador, ef_v.nombre AS vendedor
+       FROM clausulazos c
+       JOIN jugadores j ON j.id = c.id_jugador
+       LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
+       JOIN equipos_fantasy ef_c ON ef_c.id = c.id_comprador
+       JOIN equipos_fantasy ef_v ON ef_v.id = c.id_vendedor
+       ORDER BY c.creado_en DESC
+       LIMIT 200`
     );
     return rows;
-  });
-
-  // PUT /api/admin/activaciones-clausula/:id — confirmar o rechazar
-  app.put('/activaciones-clausula/:id', { preHandler: app.requireAdmin }, async (req, reply) => {
-    const id = parseInt(req.params.id);
-    const { accion } = req.body ?? {}; // 'COMPLETADA' o 'RECHAZADA'
-
-    if (!['COMPLETADA', 'RECHAZADA'].includes(accion)) {
-      return reply.code(400).send({ error: 'accion debe ser COMPLETADA o RECHAZADA' });
-    }
-
-    const { rows: act } = await pool.query(
-      `SELECT ac.id, ac.id_plantilla, ac.id_comprador, ac.monto_pagado
-       FROM activaciones_clausula ac WHERE ac.id = $1 AND ac.estado = 'PENDIENTE'`,
-      [id]
-    );
-    if (act.length === 0) return reply.code(404).send({ error: 'Activación no encontrada o ya procesada' });
-    const activacion = act[0];
-
-    if (accion === 'RECHAZADA') {
-      // Devolver dinero al comprador
-      await pool.query(
-        `UPDATE equipos_fantasy SET saldo_disponible = saldo_disponible + $1 WHERE id = $2`,
-        [activacion.monto_pagado, activacion.id_comprador]
-      );
-      await pool.query(
-        `UPDATE activaciones_clausula SET estado = 'RECHAZADA' WHERE id = $1`, [id]
-      );
-      return { ok: true, accion: 'RECHAZADA' };
-    }
-
-    // COMPLETADA: transferir jugador
-    const { rows: plant } = await pool.query(
-      `SELECT id_equipo_fantasy, id_jugador FROM plantillas WHERE id = $1`,
-      [activacion.id_plantilla]
-    );
-    if (plant.length === 0) return reply.code(400).send({ error: 'Plantilla no encontrada' });
-    const { id_equipo_fantasy: idVendedor, id_jugador } = plant[0];
-
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // Cobrar al comprador y pagar al vendedor
-      await client.query(
-        `UPDATE equipos_fantasy SET saldo_disponible = saldo_disponible - $1 WHERE id = $2`,
-        [activacion.monto_pagado, activacion.id_comprador]
-      );
-      await client.query(
-        `UPDATE equipos_fantasy SET saldo_disponible = saldo_disponible + $1 WHERE id = $2`,
-        [activacion.monto_pagado, idVendedor]
-      );
-
-      // Transferir jugador
-      await client.query(
-        `DELETE FROM plantillas WHERE id_equipo_fantasy = $1 AND id_jugador = $2`,
-        [idVendedor, id_jugador]
-      );
-
-      const clausulaDesde = new Date(Date.now() + 15 * 86_400_000).toISOString().split('T')[0];
-      const clausulaInicial = Math.round(activacion.monto_pagado * 1.5);
-
-      await client.query(
-        `INSERT INTO plantillas
-           (id_equipo_fantasy, id_jugador, precio_compra, clausula_monto,
-            clausula_activa_desde, fecha_fichaje)
-         VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)
-         ON CONFLICT (id_equipo_fantasy, id_jugador) DO UPDATE
-           SET precio_compra = EXCLUDED.precio_compra,
-               clausula_monto = EXCLUDED.clausula_monto,
-               clausula_activa_desde = EXCLUDED.clausula_activa_desde,
-               fecha_fichaje = EXCLUDED.fecha_fichaje`,
-        [activacion.id_comprador, id_jugador, activacion.monto_pagado,
-         clausulaInicial, clausulaDesde]
-      );
-
-      await client.query(
-        `UPDATE jugadores SET precio_actual = $1 WHERE id = $2`,
-        [activacion.monto_pagado, id_jugador]
-      );
-
-      await client.query(
-        `UPDATE activaciones_clausula SET estado = 'COMPLETADA' WHERE id = $1`, [id]
-      );
-
-      await client.query('COMMIT');
-      return { ok: true, accion: 'COMPLETADA' };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
   });
 
   // ── Mercado diario ────────────────────────────────────────

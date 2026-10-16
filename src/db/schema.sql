@@ -194,6 +194,19 @@ CREATE TABLE IF NOT EXISTS activaciones_clausula (
   creado_en       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ─── Clausulazos (pago de cláusula: compra instantánea sin negociación) ───
+CREATE TABLE IF NOT EXISTS clausulazos (
+  id              SERIAL PRIMARY KEY,
+  id_jugador      INTEGER NOT NULL REFERENCES jugadores(id) ON DELETE CASCADE,
+  id_vendedor     INTEGER NOT NULL REFERENCES equipos_fantasy(id) ON DELETE CASCADE,
+  id_comprador    INTEGER NOT NULL REFERENCES equipos_fantasy(id) ON DELETE CASCADE,
+  monto           BIGINT NOT NULL,
+  periodo_jornada INTEGER NOT NULL,  -- última jornada CALCULADA al pagar (límite de clausulazos por jornada)
+  creado_en       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_clausulazos_comprador ON clausulazos(id_comprador, periodo_jornada);
+
 -- ─── Ofertas directas (sistema o usuario→usuario) ────────────
 CREATE TABLE IF NOT EXISTS ofertas (
   id                  SERIAL PRIMARY KEY,

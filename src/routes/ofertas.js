@@ -1,4 +1,5 @@
 import { pool } from '../db/pool.js';
+import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 
 export async function ofertasRoutes(app) {
 
@@ -194,7 +195,6 @@ export async function ofertasRoutes(app) {
       // Añadir al comprador (solo oferta de usuario)
       if (oferta.tipo === 'USUARIO' && compradorId) {
         const fechaFichaje = new Date();
-        const clausulaDesde = new Date(fechaFichaje.getTime() + 15 * 86_400_000);
         await client.query(
           `INSERT INTO plantillas
              (id_equipo_fantasy, id_jugador, precio_compra, clausula_monto, clausula_activa_desde, fecha_fichaje)
@@ -205,8 +205,7 @@ export async function ofertasRoutes(app) {
                  clausula_activa_desde = EXCLUDED.clausula_activa_desde,
                  fecha_fichaje = EXCLUDED.fecha_fichaje`,
           [compradorId, oferta.id_jugador, oferta.monto,
-           Math.round(oferta.monto * 1.5),
-           clausulaDesde.toISOString().split('T')[0], fechaFichaje]
+           clausulaInicial(oferta.monto), finProteccion(fechaFichaje), fechaFichaje]
         );
       }
 

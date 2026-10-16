@@ -1,4 +1,7 @@
 import { pool } from '../db/pool.js';
+import {
+  pagarClausula, subirClausula, ErrorClausula, liberarJugadorDelMercado, clausulazosRestantes,
+} from '../services/clausulas.js';
 
 export async function equiposRoutes(app) {
 
@@ -28,7 +31,7 @@ export async function equiposRoutes(app) {
       [ef.id]
     );
 
-    return { ...ef, jugadores };
+    return { ...ef, jugadores, clausulazos_restantes: await clausulazosRestantes(ef.id) };
   });
 
   // POST /api/equipos/mi-equipo/vender — vender un jugador al instante por su precio actual
@@ -69,44 +72,8 @@ export async function equiposRoutes(app) {
         [monto, idEf]
       );
 
-      // Cancelar subastas activas del jugador y devolver pujas bloqueadas
-      const { rows: subActivas } = await client.query(
-        `SELECT id FROM subastas WHERE id_jugador = $1 AND estado = 'ACTIVA'`, [id_jugador]
-      );
-      for (const sub of subActivas) {
-        const { rows: pujas } = await client.query(
-          `SELECT id_equipo_fantasy, monto FROM pujas WHERE id_subasta = $1`, [sub.id]
-        );
-        for (const puja of pujas) {
-          await client.query(
-            `UPDATE equipos_fantasy
-             SET saldo_disponible = saldo_disponible + $1, saldo_bloqueado = saldo_bloqueado - $1
-             WHERE id = $2`,
-            [puja.monto, puja.id_equipo_fantasy]
-          );
-        }
-        await client.query(`UPDATE subastas SET estado = 'DESIERTA' WHERE id = $1`, [sub.id]);
-      }
-
-      // Expirar y desbloquear ofertas pendientes de otros compradores por este jugador
-      const { rows: ofertasPend } = await client.query(
-        `SELECT id, id_equipo_comprador, monto, tipo FROM ofertas
-         WHERE id_jugador = $1 AND estado = 'PENDIENTE'`, [id_jugador]
-      );
-      for (const o of ofertasPend) {
-        if (o.tipo === 'USUARIO' && o.id_equipo_comprador) {
-          await client.query(
-            `UPDATE equipos_fantasy
-             SET saldo_disponible = saldo_disponible + $1, saldo_bloqueado = saldo_bloqueado - $1
-             WHERE id = $2`,
-            [o.monto, o.id_equipo_comprador]
-          );
-        }
-      }
-      await client.query(
-        `UPDATE ofertas SET estado = 'EXPIRADA' WHERE id_jugador = $1 AND estado = 'PENDIENTE'`,
-        [id_jugador]
-      );
+      // Cancelar subastas y ofertas abiertas del jugador devolviendo el saldo bloqueado
+      await liberarJugadorDelMercado(client, id_jugador);
 
       await client.query('COMMIT');
       return { ok: true, monto, mensaje: `${nombre} vendido por ${monto.toLocaleString()}€` };
@@ -214,85 +181,26 @@ export async function equiposRoutes(app) {
     }
   });
 
-  // PUT /api/equipos/mi-equipo/clausula/:idPlantilla — subir cláusula de rescisión
+  // PUT /api/equipos/mi-equipo/clausula/:idPlantilla — subir cláusula (cuesta el 10% del incremento)
   app.put('/mi-equipo/clausula/:idPlantilla', { preHandler: app.authenticate }, async (req, reply) => {
-    const idPlantilla = parseInt(req.params.idPlantilla);
-    const { clausula_monto } = req.body ?? {};
-
-    if (!clausula_monto || clausula_monto <= 0) {
-      return reply.code(400).send({ error: 'clausula_monto debe ser mayor que cero' });
+    try {
+      return await subirClausula(req.user.id, parseInt(req.params.idPlantilla), req.body?.clausula_monto);
+    } catch (err) {
+      if (err instanceof ErrorClausula) return reply.code(err.status).send({ error: err.message });
+      throw err;
     }
-
-    const { rows: ef } = await pool.query(
-      `SELECT id FROM equipos_fantasy WHERE id_usuario = $1`, [req.user.id]
-    );
-    if (ef.length === 0) return reply.code(404).send({ error: 'No tienes equipo' });
-
-    // Verificar que la plantilla pertenece al usuario y que la nueva cláusula sea mayor
-    const { rows: plant } = await pool.query(
-      `SELECT clausula_monto FROM plantillas
-       WHERE id = $1 AND id_equipo_fantasy = $2`,
-      [idPlantilla, ef[0].id]
-    );
-    if (plant.length === 0) return reply.code(404).send({ error: 'Jugador no encontrado en tu plantilla' });
-    if (clausula_monto <= plant[0].clausula_monto) {
-      return reply.code(400).send({ error: 'Solo puedes subir la cláusula, no bajarla' });
-    }
-
-    await pool.query(
-      `UPDATE plantillas SET clausula_monto = $1 WHERE id = $2`,
-      [clausula_monto, idPlantilla]
-    );
-    return { ok: true, clausula_monto };
   });
 
-  // POST /api/equipos/mi-equipo/clausula/:idPlantilla/activar — activar cláusula (comprar por cláusula)
-  app.post('/mi-equipo/clausula/:idPlantilla/activar', { preHandler: app.authenticate }, async (req, reply) => {
-    const idPlantilla = parseInt(req.params.idPlantilla);
-
-    const { rows: ef } = await pool.query(
-      `SELECT id, saldo_disponible FROM equipos_fantasy WHERE id_usuario = $1`,
-      [req.user.id]
-    );
-    if (ef.length === 0) return reply.code(404).send({ error: 'No tienes equipo' });
-    const comprador = ef[0];
-
-    const { rows: plant } = await pool.query(
-      `SELECT p.id, p.id_equipo_fantasy, p.id_jugador, p.clausula_monto,
-              p.clausula_activa_desde, j.nombre
-       FROM plantillas p
-       JOIN jugadores j ON j.id = p.id_jugador
-       WHERE p.id = $1`,
-      [idPlantilla]
-    );
-    if (plant.length === 0) return reply.code(404).send({ error: 'Jugador no encontrado' });
-    const plantilla = plant[0];
-
-    if (plantilla.id_equipo_fantasy === comprador.id) {
-      return reply.code(400).send({ error: 'No puedes comprar tu propio jugador por cláusula' });
+  // POST /api/equipos/clausulazo — pagar la cláusula de un jugador de otro equipo (fichaje instantáneo)
+  app.post('/clausulazo', { preHandler: app.authenticate }, async (req, reply) => {
+    const idJugador = parseInt(req.body?.id_jugador);
+    if (!idJugador) return reply.code(400).send({ error: 'id_jugador requerido' });
+    try {
+      return await pagarClausula(req.user.id, idJugador);
+    } catch (err) {
+      if (err instanceof ErrorClausula) return reply.code(err.status).send({ error: err.message });
+      throw err;
     }
-    if (new Date(plantilla.clausula_activa_desde) > new Date()) {
-      return reply.code(400).send({
-        error: `La cláusula no está activa hasta el ${plantilla.clausula_activa_desde}`,
-      });
-    }
-    if (comprador.saldo_disponible < plantilla.clausula_monto) {
-      return reply.code(400).send({ error: 'Saldo insuficiente para activar la cláusula' });
-    }
-
-    // Crear activación pendiente (el admin puede confirmar/rechazar)
-    const { rows: activ } = await pool.query(
-      `INSERT INTO activaciones_clausula (id_plantilla, id_comprador, monto_pagado)
-       VALUES ($1, $2, $3)
-       RETURNING id`,
-      [idPlantilla, comprador.id, plantilla.clausula_monto]
-    );
-
-    return {
-      ok: true,
-      id_activacion: activ[0].id,
-      mensaje: `Cláusula de ${plantilla.nombre} activada por ${plantilla.clausula_monto.toLocaleString()}€. Pendiente de confirmación.`,
-    };
   });
 
   // GET /api/equipos/ligas — ligas en las que participa el usuario
@@ -366,6 +274,8 @@ export async function equiposRoutes(app) {
       `SELECT j.id AS id_jugador, j.nombre, j.posicion,
               er.nombre AS equipo_real, j.precio_actual,
               p.es_titular, p.es_capitan,
+              p.clausula_monto, p.clausula_activa_desde,
+              (p.clausula_activa_desde <= CURRENT_DATE) AS clausula_activa,
               COALESCE((
                 SELECT SUM(e.puntos) FROM estadisticas e WHERE e.id_jugador = j.id
               ), 0) AS puntos_total

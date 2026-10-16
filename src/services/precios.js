@@ -9,11 +9,12 @@
  *
  * Tras actualizar precios, también se recalculan las cláusulas de rescisión
  * de los jugadores en plantillas fantasy:
- *   nueva_clausula_minima = nuevo_precio × 1.5
+ *   nueva_clausula_minima = nuevo_precio × 1.5  (máximo 150M)
  *   Si el propietario había subido la cláusula por encima, se mantiene la más alta.
  */
 
 import { pool } from '../db/pool.js';
+import { clausulaInicial, CLAUSULA } from './clausulas.js';
 
 const FACTOR_AJUSTE = 0.02;   // 2% por punto
 const PRECIO_MINIMO = 500_000; // 500K€
@@ -55,13 +56,12 @@ export async function actualizarPrecios(idJornada) {
         [s.id_jugador, idJornada, nuevoPrecio]
       );
 
-      // Actualizar cláusula de rescisión en plantillas (solo si es menor que la vigente)
-      const clausulaMinima = Math.round(nuevoPrecio * 1.5);
+      // Actualizar cláusula de rescisión en plantillas (solo si es menor que la vigente, con tope)
       await client.query(
         `UPDATE plantillas
-         SET clausula_monto = GREATEST(clausula_monto, $1)
+         SET clausula_monto = LEAST(GREATEST(clausula_monto, $1), $3)
          WHERE id_jugador = $2`,
-        [clausulaMinima, s.id_jugador]
+        [clausulaInicial(nuevoPrecio), s.id_jugador, CLAUSULA.MAXIMO]
       );
     }
 

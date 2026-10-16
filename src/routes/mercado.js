@@ -1,4 +1,5 @@
 import { pool } from '../db/pool.js';
+import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 
 export async function mercadoRoutes(app) {
 
@@ -420,8 +421,6 @@ export async function resolverSubastasVencidas() {
         }
 
         const fechaFichaje = new Date();
-        const clausulaDesde = new Date(fechaFichaje.getTime() + 15 * 86_400_000);
-        const clausulaInicial = Math.round(ganador.monto * 1.5);
 
         await client.query(
           `INSERT INTO plantillas
@@ -434,7 +433,7 @@ export async function resolverSubastasVencidas() {
                  clausula_activa_desde = EXCLUDED.clausula_activa_desde,
                  fecha_fichaje = EXCLUDED.fecha_fichaje`,
           [ganador.id_equipo_fantasy, sub.id_jugador, ganador.monto,
-           clausulaInicial, clausulaDesde.toISOString().split('T')[0], fechaFichaje]
+           clausulaInicial(ganador.monto), finProteccion(fechaFichaje), fechaFichaje]
         );
 
         // Actualizar precio de mercado del jugador

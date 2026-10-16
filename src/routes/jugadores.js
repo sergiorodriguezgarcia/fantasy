@@ -1,4 +1,5 @@
 import { pool } from '../db/pool.js';
+import { clausulazosRestantes } from '../services/clausulas.js';
 
 export async function jugadoresRoutes(app) {
 
@@ -70,7 +71,11 @@ export async function jugadoresRoutes(app) {
     const { rows } = await pool.query(
       `SELECT j.id, j.nombre, j.posicion, j.precio_actual, j.precio_inicial,
               er.nombre AS equipo_real, j.cod_jugador, j.activo,
-              (SELECT json_build_object('id', ef.id, 'nombre', ef.nombre)
+              (SELECT json_build_object(
+                        'id', ef.id, 'nombre', ef.nombre,
+                        'clausula_monto', p.clausula_monto,
+                        'clausula_activa_desde', p.clausula_activa_desde,
+                        'clausula_activa', p.clausula_activa_desde <= CURRENT_DATE)
                FROM plantillas p
                JOIN equipos_fantasy ef ON ef.id = p.id_equipo_fantasy
                WHERE p.id_jugador = j.id
@@ -113,6 +118,20 @@ export async function jugadoresRoutes(app) {
     );
 
     if (rows.length === 0) return reply.code(404).send({ error: 'Jugador no encontrado' });
-    return rows[0];
+    const jugador = rows[0];
+
+    // La ruta es pública; si viene con token se indica si el jugador es suyo y cuántos clausulazos le quedan
+    try {
+      await req.jwtVerify();
+      const { rows: ef } = await pool.query(
+        `SELECT id FROM equipos_fantasy WHERE id_usuario = $1`, [req.user.id]
+      );
+      if (ef.length > 0) {
+        jugador.es_mio = jugador.equipo_fantasy?.id === ef[0].id;
+        jugador.clausulazos_restantes = await clausulazosRestantes(ef[0].id);
+      }
+    } catch { /* sin token: solo datos públicos */ }
+
+    return jugador;
   });
 }

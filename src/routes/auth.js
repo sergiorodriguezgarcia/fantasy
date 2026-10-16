@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { pool } from '../db/pool.js';
+import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 
 export async function authRoutes(app) {
 
@@ -47,8 +48,7 @@ export async function authRoutes(app) {
 
         // Asignar jugadores iniciales aleatorios (1 POR, 4 DEF, 4 MED, 3 DEL)
         const CUOTAS = [['POR', 1], ['DEF', 4], ['MED', 4], ['DEL', 3]];
-        const clausulaDesde = new Date(Date.now() + 15 * 86_400_000)
-          .toISOString().split('T')[0];
+        const clausulaDesde = finProteccion();
 
         for (const [pos, cantidad] of CUOTAS) {
           const { rows: jugadores } = await client.query(
@@ -60,7 +60,7 @@ export async function authRoutes(app) {
             [pos, cantidad]
           );
           for (const j of jugadores) {
-            const clausula = Math.round(j.precio_actual * 1.5);
+            const clausula = clausulaInicial(j.precio_actual);
             await client.query(
               `INSERT INTO plantillas
                  (id_equipo_fantasy, id_jugador, precio_compra,
