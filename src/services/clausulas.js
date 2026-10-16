@@ -65,7 +65,8 @@ export async function clausulazosRestantes(idEquipo, db = pool) {
  */
 export async function liberarJugadorDelMercado(client, idJugador) {
   const { rows: subActivas } = await client.query(
-    `SELECT id FROM subastas WHERE id_jugador = $1 AND estado = 'ACTIVA'`, [idJugador]
+    // FOR UPDATE: espera a una resolución en curso y, si la subasta ya no está activa, la descarta
+    `SELECT id FROM subastas WHERE id_jugador = $1 AND estado = 'ACTIVA' FOR UPDATE`, [idJugador]
   );
   for (const sub of subActivas) {
     const { rows: pujas } = await client.query(

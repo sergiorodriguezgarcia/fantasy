@@ -60,11 +60,15 @@ export async function equiposRoutes(app) {
     try {
       await client.query('BEGIN');
 
-      // Quitar de la plantilla
-      await client.query(
+      // Quitar de la plantilla: si llegan dos ventas a la vez (doble clic) solo una borra y cobra
+      const { rowCount: borrado } = await client.query(
         `DELETE FROM plantillas WHERE id_equipo_fantasy = $1 AND id_jugador = $2`,
         [idEf, id_jugador]
       );
+      if (borrado === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(404).send({ error: 'Jugador no encontrado en tu plantilla' });
+      }
 
       // Ingresar el dinero al vendedor
       await client.query(

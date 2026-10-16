@@ -106,6 +106,24 @@ export async function ofertasRoutes(app) {
     try {
       await client.query('BEGIN');
 
+      // Repetir las comprobaciones con el equipo bloqueado (dos peticiones a la vez no pasan ambas)
+      const { rows: [saldo] } = await client.query(
+        `SELECT saldo_disponible FROM equipos_fantasy WHERE id = $1 FOR UPDATE`, [comprador.id]
+      );
+      if (Number(saldo.saldo_disponible) < monto) {
+        await client.query('ROLLBACK');
+        return reply.code(400).send({ error: 'Saldo insuficiente para esta oferta' });
+      }
+      const { rows: duplicada } = await client.query(
+        `SELECT id FROM ofertas
+         WHERE id_equipo_comprador = $1 AND id_jugador = $2 AND estado = 'PENDIENTE'`,
+        [comprador.id, id_jugador]
+      );
+      if (duplicada.length > 0) {
+        await client.query('ROLLBACK');
+        return reply.code(400).send({ error: 'Ya tienes una oferta pendiente por este jugador' });
+      }
+
       // Bloquear saldo del comprador para garantizar que puede pagar
       await client.query(
         `UPDATE equipos_fantasy
@@ -157,8 +175,11 @@ export async function ofertasRoutes(app) {
       return reply.code(400).send({ error: 'Esta oferta ya no está pendiente' });
     }
     if (oferta.fecha_expiracion && new Date(oferta.fecha_expiracion) < new Date()) {
-      // Desbloquear saldo del comprador antes de marcar como expirada
-      if (oferta.id_equipo_comprador) {
+      // Marcar como expirada y, solo si este proceso la ha cambiado, desbloquear el saldo del comprador
+      const { rowCount } = await pool.query(
+        `UPDATE ofertas SET estado = 'EXPIRADA' WHERE id = $1 AND estado = 'PENDIENTE'`, [idOferta]
+      );
+      if (rowCount > 0 && oferta.id_equipo_comprador) {
         await pool.query(
           `UPDATE equipos_fantasy
            SET saldo_disponible = saldo_disponible + $1,
@@ -167,7 +188,6 @@ export async function ofertasRoutes(app) {
           [oferta.monto, oferta.id_equipo_comprador]
         );
       }
-      await pool.query(`UPDATE ofertas SET estado = 'EXPIRADA' WHERE id = $1`, [idOferta]);
       return reply.code(400).send({ error: 'Esta oferta ha expirado' });
     }
 
@@ -190,6 +210,18 @@ export async function ofertasRoutes(app) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      // Marcar la oferta como ACEPTADA antes de mover dinero: si llegan dos aceptaciones a la vez
+      // (doble clic) la segunda no encuentra la oferta pendiente y no vuelve a pagar
+      const { rowCount: aceptada } = await client.query(
+        `UPDATE ofertas SET estado = 'ACEPTADA', fecha_respuesta = NOW()
+         WHERE id = $1 AND estado = 'PENDIENTE'`,
+        [idOferta]
+      );
+      if (aceptada === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(400).send({ error: 'Esta oferta ya no está pendiente' });
+      }
 
       // Pagar al vendedor
       await client.query(
@@ -229,11 +261,6 @@ export async function ofertasRoutes(app) {
       }
 
       // El valor de mercado no cambia: un acuerdo entre dos usuarios no debe fijar el precio del jugador
-
-      // Marcar esta oferta como ACEPTADA
-      await client.query(
-        `UPDATE ofertas SET estado = 'ACEPTADA', fecha_respuesta = NOW() WHERE id = $1`, [idOferta]
-      );
 
       // Expirar y DESBLOQUEAR el resto de ofertas PENDIENTE para este jugador
       const { rows: otrasOfertas } = await client.query(
@@ -311,6 +338,15 @@ export async function ofertasRoutes(app) {
     try {
       await client.query('BEGIN');
 
+      // Cambiar el estado primero: con dos peticiones a la vez solo una desbloquea el saldo
+      const { rowCount } = await client.query(
+        `UPDATE ofertas SET estado = 'RECHAZADA' WHERE id = $1 AND estado = 'PENDIENTE'`, [idOferta]
+      );
+      if (rowCount === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(404).send({ error: 'Oferta no encontrada o ya procesada' });
+      }
+
       // Desbloquear saldo del comprador
       if (oferta.tipo === 'USUARIO' && oferta.id_equipo_comprador) {
         await client.query(
@@ -321,10 +357,6 @@ export async function ofertasRoutes(app) {
           [oferta.monto, oferta.id_equipo_comprador]
         );
       }
-
-      await client.query(
-        `UPDATE ofertas SET estado = 'RECHAZADA' WHERE id = $1`, [idOferta]
-      );
 
       await client.query('COMMIT');
       return { ok: true };
@@ -359,6 +391,15 @@ export async function ofertasRoutes(app) {
     try {
       await client.query('BEGIN');
 
+      // Cambiar el estado primero: con dos peticiones a la vez solo una devuelve el saldo
+      const { rowCount } = await client.query(
+        `UPDATE ofertas SET estado = 'RECHAZADA' WHERE id = $1 AND estado = 'PENDIENTE'`, [idOferta]
+      );
+      if (rowCount === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(404).send({ error: 'Oferta no encontrada o ya procesada' });
+      }
+
       // Devolver saldo bloqueado
       if (oferta.tipo === 'USUARIO') {
         await client.query(
@@ -369,8 +410,6 @@ export async function ofertasRoutes(app) {
           [oferta.monto, ef[0].id]
         );
       }
-
-      await client.query(`UPDATE ofertas SET estado = 'RECHAZADA' WHERE id = $1`, [idOferta]);
 
       await client.query('COMMIT');
       return { ok: true };

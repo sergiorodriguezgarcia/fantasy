@@ -93,6 +93,15 @@ export async function mercadoRoutes(app) {
     try {
       await client.query('BEGIN');
 
+      // Cerrar la subasta primero: si llegan dos cancelaciones a la vez solo una devuelve las pujas
+      const { rowCount } = await client.query(
+        `UPDATE subastas SET estado = 'DESIERTA' WHERE id = $1 AND estado = 'ACTIVA'`, [idSubasta]
+      );
+      if (rowCount === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(404).send({ error: 'Subasta no encontrada o ya cerrada' });
+      }
+
       // Devolver saldo bloqueado a todos los pujadores
       const { rows: pujas } = await client.query(
         `SELECT id_equipo_fantasy, monto FROM pujas WHERE id_subasta = $1`, [idSubasta]
@@ -106,8 +115,6 @@ export async function mercadoRoutes(app) {
           [puja.monto, puja.id_equipo_fantasy]
         );
       }
-
-      await client.query(`UPDATE subastas SET estado = 'DESIERTA' WHERE id = $1`, [idSubasta]);
 
       await client.query('COMMIT');
       return { ok: true, mensaje: 'Subasta cancelada. Las pujas han sido devueltas.' };
@@ -239,22 +246,32 @@ export async function mercadoRoutes(app) {
       });
     }
 
-    // Verificar saldo (disponible + bloqueado anterior de esta subasta)
-    const { rows: pujaAnterior } = await pool.query(
-      `SELECT COALESCE(monto, 0) AS monto FROM pujas
-       WHERE id_subasta = $1 AND id_equipo_fantasy = $2`,
-      [idSubasta, comprador.id]
-    );
-    const montoAnterior = parseInt(pujaAnterior[0]?.monto ?? 0);
-    const saldoEfectivo = comprador.saldo_disponible + montoAnterior;
-
-    if (saldoEfectivo < monto) {
-      return reply.code(400).send({ error: 'Saldo insuficiente' });
-    }
-
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      // Bloquear subasta y equipo: evita pujar mientras se resuelve y las pujas duplicadas (doble clic)
+      const { rows: activa } = await client.query(
+        `SELECT id FROM subastas WHERE id = $1 AND estado = 'ACTIVA' FOR UPDATE`, [idSubasta]
+      );
+      if (activa.length === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(400).send({ error: 'La subasta ya no está activa' });
+      }
+      const { rows: [saldo] } = await client.query(
+        `SELECT saldo_disponible FROM equipos_fantasy WHERE id = $1 FOR UPDATE`, [comprador.id]
+      );
+
+      // Verificar saldo (disponible + bloqueado anterior de esta subasta)
+      const { rows: pujaAnterior } = await client.query(
+        `SELECT monto FROM pujas WHERE id_subasta = $1 AND id_equipo_fantasy = $2`,
+        [idSubasta, comprador.id]
+      );
+      const montoAnterior = Number(pujaAnterior[0]?.monto ?? 0);
+      if (Number(saldo.saldo_disponible) + montoAnterior < monto) {
+        await client.query('ROLLBACK');
+        return reply.code(400).send({ error: 'Saldo insuficiente' });
+      }
 
       // Devolver saldo anterior bloqueado
       if (montoAnterior > 0) {
@@ -313,21 +330,27 @@ export async function mercadoRoutes(app) {
       return reply.code(400).send({ error: 'La subasta ya no está activa' });
     }
 
-    const { rows: puja } = await pool.query(
-      `SELECT monto FROM pujas WHERE id_subasta = $1 AND id_equipo_fantasy = $2`,
-      [idSubasta, idEf]
-    );
-    if (puja.length === 0) return reply.code(404).send({ error: 'No tienes ninguna puja en esta subasta' });
-
-    const monto = parseInt(puja[0].monto);
-
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        `DELETE FROM pujas WHERE id_subasta = $1 AND id_equipo_fantasy = $2`,
+      // Bloquear la subasta (no retirar mientras se resuelve) y borrar la puja dentro de la
+      // transacción: si llegan dos peticiones a la vez solo una borra la puja y devuelve el saldo
+      const { rows: activa } = await client.query(
+        `SELECT id FROM subastas WHERE id = $1 AND estado = 'ACTIVA' FOR UPDATE`, [idSubasta]
+      );
+      if (activa.length === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(400).send({ error: 'La subasta ya no está activa' });
+      }
+      const { rows: puja } = await client.query(
+        `DELETE FROM pujas WHERE id_subasta = $1 AND id_equipo_fantasy = $2 RETURNING monto`,
         [idSubasta, idEf]
       );
+      if (puja.length === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(404).send({ error: 'No tienes ninguna puja en esta subasta' });
+      }
+      const monto = Number(puja[0].monto);
       await client.query(
         `UPDATE equipos_fantasy
          SET saldo_disponible = saldo_disponible + $1,
@@ -391,6 +414,16 @@ export async function resolverSubastasVencidas() {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      // Bloquear la subasta: la resolución se lanza en cada carga del mercado y dos peticiones
+      // simultáneas la resolvían dos veces (devolviendo pujas y descontando saldo bloqueado dos veces)
+      const { rows: sigueActiva } = await client.query(
+        `SELECT id FROM subastas WHERE id = $1 AND estado = 'ACTIVA' FOR UPDATE`, [sub.id]
+      );
+      if (sigueActiva.length === 0) {
+        await client.query('ROLLBACK');
+        continue;
+      }
 
       // Mejor puja
       const { rows: mejorPuja } = await client.query(
