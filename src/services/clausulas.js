@@ -85,7 +85,8 @@ export async function liberarJugadorDelMercado(client, idJugador) {
 
   const { rows: ofertasPend } = await client.query(
     `SELECT id, id_equipo_comprador, monto, tipo FROM ofertas
-     WHERE id_jugador = $1 AND estado = 'PENDIENTE'`, [idJugador]
+     WHERE id_jugador = $1 AND estado = 'PENDIENTE'
+     FOR UPDATE`, [idJugador]
   );
   for (const o of ofertasPend) {
     if (o.tipo === 'USUARIO' && o.id_equipo_comprador) {
