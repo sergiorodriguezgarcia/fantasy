@@ -46,6 +46,23 @@ export async function jugadoresRoutes(app) {
     return rows;
   });
 
+  // GET /api/jugadores/:id/foto  — foto del jugador (pública: la piden los <img>, que no envían el JWT)
+  app.get('/:id/foto', async (req, reply) => {
+    const id = parseInt(req.params.id);
+    const { rows } = await pool.query(
+      `SELECT foto, foto_mime FROM jugadores WHERE id = $1 AND foto IS NOT NULL`,
+      [id]
+    );
+    if (rows.length === 0) {
+      // Cacheamos también el 404 para no repetir la petición en cada render
+      return reply.code(404).header('Cache-Control', 'public, max-age=3600').send({ error: 'Sin foto' });
+    }
+    return reply
+      .header('Content-Type', rows[0].foto_mime ?? 'image/jpeg')
+      .header('Cache-Control', 'public, max-age=86400')
+      .send(rows[0].foto);
+  });
+
   // GET /api/jugadores/:id  — detalle con historial de precio
   app.get('/:id', async (req, reply) => {
     const id = parseInt(req.params.id);

@@ -16,6 +16,7 @@ import { actualizarPrecios } from '../services/precios.js';
 import { abrirVentanaMercado } from './mercado.js';
 import { fetchJornada, fetchActa } from '../scraper/fetcher.js';
 import { parseJornada, parseActa } from '../scraper/parser.js';
+import { guardarFotosActa } from '../services/fotos.js';
 
 export async function adminRoutes(app) {
 
@@ -414,6 +415,14 @@ export async function adminRoutes(app) {
         resumen.errores.push({ codActa: partido.codActa, error: err.message });
       } finally {
         client.release();
+      }
+
+      // Fotos fuera de la transacción: un fallo aquí no debe invalidar las estadísticas
+      try {
+        resumen.fotos_actualizadas = (resumen.fotos_actualizadas ?? 0) + await guardarFotosActa(pool, acta);
+      } catch (err) {
+        resumen.errores = resumen.errores ?? [];
+        resumen.errores.push({ codActa: partido.codActa, error: `Fotos: ${err.message}` });
       }
     }
 

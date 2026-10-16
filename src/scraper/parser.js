@@ -124,7 +124,9 @@ function parsePlayers($, table, esTitular) {
     const nombre  = tds.eq(2).text().trim();
     const onclick = $(tr).attr('onclick') ?? '';
     const id      = onclick.match(/jugador=(\d+)/)?.[1] ?? null;
-    if (nombre) jugadores.push({ id, nombre, dorsal, esTitular, minutosJugados: esTitular ? 90 : 0 });
+    const imgSrc  = tds.eq(1).find('img').attr('src') ?? '';
+    const foto    = imgSrc.startsWith('data:image') ? imgSrc : null;
+    if (nombre) jugadores.push({ id, nombre, dorsal, esTitular, minutosJugados: esTitular ? 90 : 0, foto });
   });
   return jugadores;
 }
