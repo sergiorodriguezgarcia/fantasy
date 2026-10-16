@@ -6,7 +6,8 @@
  *    y queda protegido 15 días: nadie puede pagar su cláusula hasta entonces.
  *  - Pasada la protección, cualquier otro usuario puede pagar la cláusula y el jugador pasa a su
  *    equipo al instante, sin negociación (clausulazo). El fichaje reinicia la protección.
- *  - El dueño puede subir la cláusula pagando el 10% del incremento (máximo 150M).
+ *  - El dueño puede subir la cláusula pagando el 100% del incremento (máximo 150M): blindar a un
+ *    jugador cuesta lo mismo que la protección que gana.
  *  - Cada usuario puede hacer como máximo 4 clausulazos por jornada. El periodo de una jornada va
  *    desde que se calcula una jornada hasta que se calcula la siguiente.
  */
@@ -17,7 +18,7 @@ export const CLAUSULA = {
   MULTIPLICADOR: 1.5,
   MAXIMO: 150_000_000,
   DIAS_PROTECCION: 15,
-  COSTE_SUBIDA: 0.10,   // sobre el incremento
+  COSTE_SUBIDA: 1,      // sobre el incremento
   MAX_POR_JORNADA: 4,
 };
 
@@ -199,7 +200,7 @@ export async function pagarClausula(idUsuario, idJugador) {
 }
 
 /**
- * El dueño sube la cláusula de un jugador pagando el 10% del incremento.
+ * El dueño sube la cláusula de un jugador pagando el incremento (COSTE_SUBIDA × incremento).
  */
 export async function subirClausula(idUsuario, idPlantilla, nuevaClausula) {
   const nueva = Math.round(Number(nuevaClausula));
@@ -218,7 +219,7 @@ export async function subirClausula(idUsuario, idPlantilla, nuevaClausula) {
     if (!equipo) throw new ErrorClausula('No tienes equipo', 404);
 
     const { rows: [plantilla] } = await client.query(
-      `SELECT clausula_monto FROM plantillas WHERE id = $1 AND id_equipo_fantasy = $2 FOR UPDATE`,
+      `SELECT id_jugador, clausula_monto FROM plantillas WHERE id = $1 AND id_equipo_fantasy = $2 FOR UPDATE`,
       [idPlantilla, equipo.id]
     );
     if (!plantilla) throw new ErrorClausula('Jugador no encontrado en tu plantilla', 404);
@@ -238,6 +239,12 @@ export async function subirClausula(idUsuario, idPlantilla, nuevaClausula) {
     await client.query(
       `UPDATE plantillas SET clausula_monto = $1 WHERE id = $2`,
       [nueva, idPlantilla]
+    );
+    await client.query(
+      `INSERT INTO subidas_clausula
+         (id_plantilla, id_equipo_fantasy, id_jugador, clausula_anterior, clausula_nueva, coste)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [idPlantilla, equipo.id, plantilla.id_jugador, actual, nueva, coste]
     );
 
     await client.query('COMMIT');

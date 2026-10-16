@@ -207,6 +207,20 @@ CREATE TABLE IF NOT EXISTS clausulazos (
 
 CREATE INDEX IF NOT EXISTS idx_clausulazos_comprador ON clausulazos(id_comprador, periodo_jornada);
 
+-- ─── Subidas de cláusula (historial para auditar y poder deshacer blindajes) ───
+CREATE TABLE IF NOT EXISTS subidas_clausula (
+  id                SERIAL PRIMARY KEY,
+  id_plantilla      INTEGER NOT NULL,  -- sin FK: la fila de plantilla desaparece al vender o clausular
+  id_equipo_fantasy INTEGER NOT NULL REFERENCES equipos_fantasy(id) ON DELETE CASCADE,
+  id_jugador        INTEGER NOT NULL REFERENCES jugadores(id) ON DELETE CASCADE,
+  clausula_anterior BIGINT NOT NULL,
+  clausula_nueva    BIGINT NOT NULL,
+  coste             BIGINT NOT NULL,
+  creado_en         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_subidas_clausula_plantilla ON subidas_clausula(id_plantilla);
+
 -- ─── Ofertas directas (sistema o usuario→usuario) ────────────
 CREATE TABLE IF NOT EXISTS ofertas (
   id                  SERIAL PRIMARY KEY,

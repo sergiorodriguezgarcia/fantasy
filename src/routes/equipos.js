@@ -181,7 +181,7 @@ export async function equiposRoutes(app) {
     }
   });
 
-  // PUT /api/equipos/mi-equipo/clausula/:idPlantilla — subir cláusula (cuesta el 10% del incremento)
+  // PUT /api/equipos/mi-equipo/clausula/:idPlantilla — subir cláusula (cuesta el 100% del incremento)
   app.put('/mi-equipo/clausula/:idPlantilla', { preHandler: app.authenticate }, async (req, reply) => {
     try {
       return await subirClausula(req.user.id, parseInt(req.params.idPlantilla), req.body?.clausula_monto);
