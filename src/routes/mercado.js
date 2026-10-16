@@ -39,6 +39,38 @@ export async function mercadoRoutes(app) {
     return rows;
   });
 
+  // GET /api/mercado/historico — fichajes: subastas resueltas, ofertas aceptadas y clausulazos
+  // vendedor = NULL cuando el jugador se compró al mercado (subasta del sistema)
+  app.get('/historico', { preHandler: app.authenticate }, async () => {
+    const { rows } = await pool.query(
+      `SELECT h.tipo, h.fecha, h.monto, h.id_jugador, j.nombre AS jugador, j.posicion,
+              uc.nombre AS comprador, uv.nombre AS vendedor
+       FROM (
+         SELECT 'SUBASTA' AS tipo, s.fecha_cierre AS fecha, s.precio_final AS monto,
+                s.id_jugador, s.id_ganador AS id_comprador,
+                CASE WHEN s.tipo = 'USUARIO' THEN s.id_vendedor END AS id_vendedor
+         FROM subastas s
+         WHERE s.estado = 'RESUELTA' AND s.id_ganador IS NOT NULL
+         UNION ALL
+         SELECT 'OFERTA', COALESCE(o.fecha_respuesta, o.fecha_creacion), o.monto,
+                o.id_jugador, o.id_equipo_comprador, o.id_equipo_vendedor
+         FROM ofertas o
+         WHERE o.estado = 'ACEPTADA' AND o.tipo = 'USUARIO' AND o.id_equipo_comprador IS NOT NULL
+         UNION ALL
+         SELECT 'CLAUSULA', c.creado_en, c.monto, c.id_jugador, c.id_comprador, c.id_vendedor
+         FROM clausulazos c
+       ) h
+       JOIN jugadores j ON j.id = h.id_jugador
+       JOIN equipos_fantasy efc ON efc.id = h.id_comprador
+       JOIN usuarios uc ON uc.id = efc.id_usuario
+       LEFT JOIN equipos_fantasy efv ON efv.id = h.id_vendedor
+       LEFT JOIN usuarios uv ON uv.id = efv.id_usuario
+       ORDER BY h.fecha DESC
+       LIMIT 100`
+    );
+    return rows;
+  });
+
   // POST /api/mercado/subastas/:id/cancelar — el vendedor cancela su propia subasta
   app.post('/subastas/:id/cancelar', { preHandler: app.authenticate }, async (req, reply) => {
     const idSubasta = parseInt(req.params.id);

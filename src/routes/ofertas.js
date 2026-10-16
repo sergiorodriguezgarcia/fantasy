@@ -68,7 +68,11 @@ export async function ofertasRoutes(app) {
 
     // Verificar que el jugador pertenece a OTRO equipo
     const { rows: plant } = await pool.query(
-      `SELECT id_equipo_fantasy FROM plantillas WHERE id_jugador = $1`, [id_jugador]
+      `SELECT p.id_equipo_fantasy, j.precio_actual
+       FROM plantillas p
+       JOIN jugadores j ON j.id = p.id_jugador
+       WHERE p.id_jugador = $1`,
+      [id_jugador]
     );
     if (plant.length === 0) {
       return reply.code(400).send({ error: 'Este jugador es agente libre. Puja en las subastas del mercado.' });
@@ -77,6 +81,14 @@ export async function ofertasRoutes(app) {
       return reply.code(400).send({ error: 'No puedes hacerte una oferta por tu propio jugador' });
     }
     const idVendedor = plant[0].id_equipo_fantasy;
+
+    // Mínimo: el valor actual del jugador (evita traspasos amañados a precio simbólico)
+    const precioActual = Number(plant[0].precio_actual);
+    if (monto < precioActual) {
+      return reply.code(400).send({
+        error: `La oferta no puede ser inferior al valor actual del jugador (${precioActual.toLocaleString('es-ES')}€)`,
+      });
+    }
 
     // No duplicar oferta pendiente del mismo comprador por este jugador
     const { rows: yaOferta } = await pool.query(
@@ -132,7 +144,7 @@ export async function ofertasRoutes(app) {
 
     const { rows: ofRows } = await pool.query(
       `SELECT o.id, o.id_jugador, o.id_equipo_comprador, o.tipo, o.monto, o.estado, o.fecha_expiracion,
-              j.nombre AS jugador
+              j.nombre AS jugador, j.precio_actual
        FROM ofertas o
        JOIN jugadores j ON j.id = o.id_jugador
        WHERE o.id = $1 AND o.id_equipo_vendedor = $2`,
@@ -157,6 +169,13 @@ export async function ofertasRoutes(app) {
       }
       await pool.query(`UPDATE ofertas SET estado = 'EXPIRADA' WHERE id = $1`, [idOferta]);
       return reply.code(400).send({ error: 'Esta oferta ha expirado' });
+    }
+
+    // Ofertas creadas antes del mínimo (o si el jugador se ha revalorizado): no se pueden aceptar
+    if (oferta.tipo === 'USUARIO' && Number(oferta.monto) < Number(oferta.precio_actual)) {
+      return reply.code(400).send({
+        error: `La oferta es inferior al valor actual del jugador (${Number(oferta.precio_actual).toLocaleString('es-ES')}€). Recházala.`,
+      });
     }
 
     // El saldo ya está bloqueado desde la creación — solo verificar que el comprador existe
@@ -209,14 +228,12 @@ export async function ofertasRoutes(app) {
         );
       }
 
-      // Actualizar precio de mercado del jugador
-      await client.query(
-        `UPDATE jugadores SET precio_actual = $1 WHERE id = $2`,
-        [oferta.monto, oferta.id_jugador]
-      );
+      // El valor de mercado no cambia: un acuerdo entre dos usuarios no debe fijar el precio del jugador
 
       // Marcar esta oferta como ACEPTADA
-      await client.query(`UPDATE ofertas SET estado = 'ACEPTADA' WHERE id = $1`, [idOferta]);
+      await client.query(
+        `UPDATE ofertas SET estado = 'ACEPTADA', fecha_respuesta = NOW() WHERE id = $1`, [idOferta]
+      );
 
       // Expirar y DESBLOQUEAR el resto de ofertas PENDIENTE para este jugador
       const { rows: otrasOfertas } = await client.query(
