@@ -55,6 +55,7 @@ export async function authRoutes(app) {
             `SELECT id, precio_actual FROM jugadores
              WHERE posicion = $1 AND activo = TRUE
                AND id NOT IN (SELECT id_jugador FROM plantillas)
+               AND id NOT IN (SELECT id_jugador FROM subastas WHERE estado = 'ACTIVA')
              ORDER BY RANDOM()
              LIMIT $2`,
             [pos, cantidad]

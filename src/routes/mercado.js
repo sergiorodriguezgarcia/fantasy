@@ -402,7 +402,23 @@ export async function resolverSubastasVencidas() {
         [sub.id]
       );
 
-      if (mejorPuja.length === 0) {
+      // Subasta del sistema de un jugador que ya tiene dueño: anularla devolviendo las pujas
+      const { rows: duenyo } = sub.tipo === 'SISTEMA'
+        ? await client.query(`SELECT 1 FROM plantillas WHERE id_jugador = $1`, [sub.id_jugador])
+        : { rows: [] };
+
+      if (duenyo.length > 0) {
+        await client.query(
+          `UPDATE equipos_fantasy ef
+           SET saldo_disponible = ef.saldo_disponible + pu.monto,
+               saldo_bloqueado  = ef.saldo_bloqueado  - pu.monto
+           FROM pujas pu
+           WHERE pu.id_subasta = $1 AND pu.id_equipo_fantasy = ef.id`,
+          [sub.id]
+        );
+        await client.query(`UPDATE subastas SET estado = 'CANCELADA' WHERE id = $1`, [sub.id]);
+        resultados.push({ id: sub.id, resultado: 'CANCELADA' });
+      } else if (mejorPuja.length === 0) {
         // Desierta: devolver el jugador al vendedor (ya lo tiene)
         await client.query(
           `UPDATE subastas SET estado = 'DESIERTA' WHERE id = $1`, [sub.id]

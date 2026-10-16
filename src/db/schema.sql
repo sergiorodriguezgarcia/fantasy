@@ -244,6 +244,8 @@ ALTER TABLE estadisticas ADD COLUMN IF NOT EXISTS goles_encajados INTEGER NOT NU
 ALTER TABLE jugadores ADD COLUMN IF NOT EXISTS foto      BYTEA;        -- foto extraída del acta (base64 decodificado)
 ALTER TABLE jugadores ADD COLUMN IF NOT EXISTS foto_mime VARCHAR(30);
 ALTER TABLE ofertas ADD COLUMN IF NOT EXISTS fecha_respuesta TIMESTAMPTZ;  -- cuándo se aceptó (histórico de fichajes)
+-- Un jugador solo puede estar en una plantilla
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plantillas_jugador_unico ON plantillas(id_jugador);
 ALTER TABLE partidos DROP CONSTRAINT IF EXISTS partidos_id_jornada_nombre_local_nombre_visitante_key;
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'partidos_jornada_equipos_uq') THEN
