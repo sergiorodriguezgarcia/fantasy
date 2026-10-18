@@ -13,7 +13,6 @@ import { parseJornada, parseActa } from '../scraper/parser.js';
 import { calcularPuntosJornada } from '../services/puntos.js';
 import { actualizarPrecios } from '../services/precios.js';
 import { normalizeName, generarCombinacionesNombre } from '../scraper/nombres.js';
-import { guardarFotosActa } from '../services/fotos.js';
 import { primerPartido } from '../services/alineaciones.js';
 
 export async function cronRoutes(app) {
@@ -396,11 +395,5 @@ async function importarPartido(idJornada, partido) {
   } finally {
     client.release();
   }
-
-  // Fotos fuera de la transacción: un fallo aquí no debe invalidar las estadísticas
-  try {
-    await guardarFotosActa(pool, acta);
-  } catch (err) {
-    console.warn(`[CRON] No se pudieron guardar las fotos del acta ${partido.codActa}: ${err.message}`);
-  }
+  // Las fotos de los jugadores ya no se actualizan al importar: las que hay son definitivas
 }
