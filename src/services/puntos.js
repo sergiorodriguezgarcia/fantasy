@@ -20,7 +20,7 @@
  */
 
 import { pool } from '../db/pool.js';
-import { guardarAlineacionesCerradas } from './alineaciones.js';
+import { guardarAlineacionesCerradas, aplicarSustituciones } from './alineaciones.js';
 
 // Premio en dinero por cada punto conseguido en una jornada (21 puntos → 2.100.000€)
 export const PREMIO_POR_PUNTO = 100_000;
@@ -175,41 +175,20 @@ export async function calcularPuntosJornada(idJornada) {
         continue;
       }
 
+      // Mismo orden que alineacionJornada(): las sustituciones (y lo que se ve en el campo) coinciden
       const { rows: plantilla } = await client.query(
         `SELECT p.id_jugador, p.es_titular, p.es_capitan, j.posicion,
                 e.puntos, e.minutos_jugados
          FROM ${conFoto ? 'alineaciones_jornada' : 'plantillas'} p
          JOIN jugadores j ON j.id = p.id_jugador
          LEFT JOIN estadisticas e ON e.id_jugador = j.id AND e.id_jornada = $2
-         WHERE p.id_equipo_fantasy = $1 ${conFoto ? 'AND p.id_jornada = $2' : ''}`,
+         WHERE p.id_equipo_fantasy = $1 ${conFoto ? 'AND p.id_jornada = $2' : ''}
+         ORDER BY j.posicion, j.nombre`,
         [equipo.id, idJornada]
       );
 
-      // Separar titulares y suplentes por posición
-      const titulares = plantilla.filter((p) => p.es_titular);
-      const suplentes = plantilla.filter((p) => !p.es_titular);
-
-      let puntosTotales = 0;
-
-      for (const jugador of titulares) {
-        let pts = jugador.puntos ?? 0;
-
-        // Sustitución automática: si el titular no jugó (0 min), buscar suplente de su posición
-        if ((jugador.minutos_jugados ?? 0) === 0) {
-          const suplente = suplentes.find(
-            (s) => !s._usado && s.posicion === jugador.posicion && (s.minutos_jugados ?? 0) > 0
-          );
-          if (suplente) {
-            pts = suplente.puntos ?? 0;
-            // Marcar el suplente como usado para no contarlo dos veces
-            suplente._usado = true;
-          }
-        }
-
-        // Capitán × 2
-        if (jugador.es_capitan) pts *= 2;
-        puntosTotales += pts;
-      }
+      // Titulares con sustitución automática (cada suplente solo una vez) y capitán ×2
+      const { total: puntosTotales } = aplicarSustituciones(plantilla);
 
       const puntosAcum = await acumuladoAnterior(equipo.id) + puntosTotales;
 

@@ -90,6 +90,74 @@ export async function origenAlineacion(idJornada, paramJornada, db = pool) {
 }
 
 /**
+ * Once que puntúa en una jornada a partir de los jugadores de un equipo ({ id_jugador, posicion,
+ * es_titular, es_capitan, puntos, minutos_jugados, ... }):
+ * - cada titular que no jugó (0 min) lo sustituye el primer suplente de su posición que sí jugó;
+ *   cada suplente solo puede sustituir a uno
+ * - el capitán puntúa ×2 (si no jugó, el doble pasa a quien entra por él)
+ * Devuelve { total, campo, banquillo }: en `campo` cada hueco titular con el jugador que puntúa en
+ * él (`entra_por` = titular sustituido) y sus puntos efectivos; en `banquillo` el resto.
+ */
+export function aplicarSustituciones(jugadores) {
+  const titulares = jugadores.filter(j => j.es_titular);
+  const suplentes = jugadores.filter(j => !j.es_titular);
+  const usados = new Set();
+  let total = 0;
+
+  const campo = titulares.map(titular => {
+    let juega = titular;
+    if ((titular.minutos_jugados ?? 0) === 0) {
+      const suplente = suplentes.find(
+        s => !usados.has(s.id_jugador) && s.posicion === titular.posicion && (s.minutos_jugados ?? 0) > 0
+      );
+      if (suplente) {
+        usados.add(suplente.id_jugador);
+        juega = suplente;
+      }
+    }
+    const puntos = (juega.puntos ?? 0) * (titular.es_capitan ? 2 : 1);
+    total += puntos;
+    return {
+      ...juega,
+      posicion: titular.posicion,
+      es_capitan: titular.es_capitan,
+      puntos_campo: puntos,
+      entra_por: juega === titular ? null : { id_jugador: titular.id_jugador, nombre: titular.nombre },
+    };
+  });
+
+  // Banquillo: suplentes que no entraron y titulares que fueron sustituidos
+  const enCampo = new Set(campo.map(j => j.id_jugador));
+  const banquillo = jugadores.filter(j => !enCampo.has(j.id_jugador));
+
+  return { total, campo, banquillo };
+}
+
+/**
+ * Alineación de un equipo en una jornada lista para pintar en el campo, con los puntos de cada
+ * jugador y las sustituciones aplicadas igual que en el cálculo. Usa la foto del cierre si existe.
+ */
+export async function alineacionJornada(idEquipo, idJornada, db = pool) {
+  const { tabla, filtro } = await origenAlineacion(idJornada, '$2', db);
+  const { rows: jugadores } = await db.query(
+    `SELECT j.id AS id_jugador, j.nombre, j.posicion, er.nombre AS equipo_real,
+            p.es_titular, p.es_capitan,
+            e.minutos_jugados, e.goles, e.amarillas, e.rojas, e.porteria_cero, e.puntos
+     FROM ${tabla} p
+     JOIN jugadores j ON j.id = p.id_jugador
+     LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
+     LEFT JOIN estadisticas e ON e.id_jugador = j.id AND e.id_jornada = $2
+     WHERE p.id_equipo_fantasy = $1 ${filtro}
+     ORDER BY j.posicion, j.nombre`,
+    [idEquipo, idJornada]
+  );
+
+  const { campo, banquillo } = aplicarSustituciones(jugadores);
+  const cuenta = pos => campo.filter(j => j.posicion === pos).length;
+  return { formacion: `${cuenta('DEF')}-${cuenta('MED')}-${cuenta('DEL')}`, campo, banquillo };
+}
+
+/**
  * Inicio del primer partido a partir de los horarios de asturfutbol.es ("18-10-2026" y "12:00",
  * hora de España). Devuelve "2026-10-18 12:00" (sin zona: se interpreta en Europe/Madrid en SQL)
  * o null si ningún partido tiene fecha.

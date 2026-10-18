@@ -3,7 +3,7 @@ import {
   pagarClausula, subirClausula, ErrorClausula, liberarJugadorDelMercado, clausulazosRestantes,
 } from '../services/clausulas.js';
 import {
-  guardarAlineacionesCerradas, jornadaConAlineacionesCerradas, proximoCierreAlineaciones, origenAlineacion,
+  guardarAlineacionesCerradas, jornadaConAlineacionesCerradas, proximoCierreAlineaciones, alineacionJornada,
 } from '../services/alineaciones.js';
 
 export async function equiposRoutes(app) {
@@ -259,27 +259,11 @@ export async function equiposRoutes(app) {
       [id, idJornada]
     );
 
-    // Alineación con la que jugó esa jornada (foto del cierre) o, si no hay foto, la actual
-    const { tabla, filtro } = await origenAlineacion(idJornada, '$2');
-    const { rows: detalle } = await pool.query(
-      `SELECT j.id AS id_jugador, j.nombre, j.posicion, er.nombre AS equipo_real,
-              p.es_capitan,
-              e.minutos_jugados, e.goles, e.amarillas, e.rojas, e.porteria_cero,
-              e.puntos AS puntos_base,
-              CASE WHEN p.es_capitan THEN e.puntos * 2 ELSE e.puntos END AS puntos_efectivos
-       FROM ${tabla} p
-       JOIN jugadores j ON j.id = p.id_jugador
-       LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
-       LEFT JOIN estadisticas e ON e.id_jugador = j.id AND e.id_jornada = $2
-       WHERE p.id_equipo_fantasy = $1 ${filtro}
-       ORDER BY p.es_titular DESC, j.posicion, j.nombre`,
-      [id, idJornada]
-    );
-
     return {
       puntos_jornada: pj[0]?.puntos_jornada ?? 0,
       puntos_acumulados: pj[0]?.puntos_acumulados ?? 0,
-      detalle,
+      // Once con el que jugó esa jornada (foto del cierre o, si no hay, plantilla actual) con sus puntos
+      alineacion: await alineacionJornada(id, idJornada),
     };
   });
 
