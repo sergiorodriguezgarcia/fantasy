@@ -3,14 +3,35 @@
  *
  * - Cada minuto: comprobar subastas vencidas y resolverlas (y caducar ofertas de usuario vencidas).
  * - Cada minuto: comprobar si son las 17:00 y abrir ventana de mercado diaria.
+ * - Cada 30 minutos: importar la jornada en juego y calcularla cuando acabe.
  *
- * En producción se puede reemplazar por un cron externo (Railway cron).
+ * Solo corren mientras el servidor está despierto. En Render free el servicio se duerme tras
+ * 15 min sin peticiones: hay que mantenerlo despierto con un ping externo a /api/health o
+ * llamar a los endpoints /api/cron/* desde un cron externo.
  */
 
 import { pool } from '../db/pool.js';
 import { resolverSubastasVencidas, abrirVentanaMercado } from '../routes/mercado.js';
+import { importarJornadaAutomatica } from '../routes/cron.js';
+
+async function cronJornada() {
+  try {
+    const r = await importarJornadaAutomatica();
+    if (r.partidos_importados_ahora?.length || r.errores?.length || r.calculada) {
+      console.log(`[CRON] Jornada ${r.jornada}: ${r.partidos_jugados} jugados, ` +
+        `importados ahora ${r.partidos_importados_ahora.length}, ${r.motivo}`, r.errores);
+    }
+  } catch (err) {
+    console.error('[CRON] Error importando jornada:', err.message);
+  }
+}
 
 export function iniciarCrons() {
+  // Importar la jornada y calcularla cuando acabe: cada 30 min y una vez al arrancar
+  // (en Render free el servicio se duerme; al despertar no hay que esperar al siguiente intervalo)
+  setTimeout(cronJornada, 60_000);
+  setInterval(cronJornada, 30 * 60_000);
+
   // Comprobar subastas vencidas cada 60 segundos
   setInterval(async () => {
     try {
@@ -52,5 +73,5 @@ export function iniciarCrons() {
     }
   }, 60_000);
 
-  console.log('[CRON] Resolución de subastas y apertura de mercado diario activados');
+  console.log('[CRON] Resolución de subastas, apertura de mercado diario e importación de jornadas activados');
 }

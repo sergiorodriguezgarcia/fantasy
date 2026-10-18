@@ -521,11 +521,7 @@ export async function resolverSubastasVencidas() {
            clausulaInicial(ganador.monto), finProteccion(fechaFichaje), fechaFichaje]
         );
 
-        // Actualizar precio de mercado del jugador
-        await client.query(
-          `UPDATE jugadores SET precio_actual = $1 WHERE id = $2`,
-          [ganador.monto, sub.id_jugador]
-        );
+        // El valor de mercado no cambia: solo lo actualiza el recálculo tras cada jornada (services/precios.js)
 
         await client.query(
           `UPDATE subastas

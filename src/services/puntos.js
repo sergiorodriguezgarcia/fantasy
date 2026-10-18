@@ -68,6 +68,12 @@ export async function calcularPuntosJornada(idJornada) {
   try {
     await client.query('BEGIN');
 
+    // Bloquear la jornada: dos cálculos simultáneos (cron + admin) van de uno en uno
+    const { rows: [jornada] } = await client.query(
+      `SELECT numero FROM jornadas WHERE id = $1 FOR UPDATE`, [idJornada]
+    );
+    if (!jornada) throw new Error(`Jornada ${idJornada} no encontrada`);
+
     // 1. Calcular puntos por estadística individual
     const { rows: stats } = await client.query(
       `SELECT e.id, e.minutos_jugados, e.goles, e.goles_propio,
@@ -97,22 +103,33 @@ export async function calcularPuntosJornada(idJornada) {
 
     let totalEquipos = 0;
 
+    // Acumulado = suma de las jornadas ANTERIORES + esta. No sirve MAX(puntos_acumulados):
+    // al recalcular una jornada ya calculada incluiría esta misma jornada y la contaría dos veces.
+    const acumuladoAnterior = async (idEquipo) => {
+      const { rows } = await client.query(
+        `SELECT COALESCE(SUM(pj.puntos_jornada), 0) AS acum
+         FROM puntuaciones_jornada pj
+         JOIN jornadas jo ON jo.id = pj.id_jornada
+         WHERE pj.id_equipo_fantasy = $1 AND jo.numero < $2`,
+        [idEquipo, jornada.numero]
+      );
+      return parseInt(rows[0].acum);
+    };
+
     for (const equipo of equipos) {
       // No puntúa si no tiene alineación guardada o tiene saldo negativo
       if (!equipo.formacion || equipo.saldo_disponible < 0) {
         await client.query(
           `INSERT INTO puntuaciones_jornada
              (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla)
-           VALUES ($1, $2, 0, COALESCE(
-             (SELECT MAX(puntos_acumulados) FROM puntuaciones_jornada WHERE id_equipo_fantasy = $1), 0
-           ), COALESCE(
+           VALUES ($1, $2, 0, $3, COALESCE(
              (SELECT SUM(j.precio_actual) FROM plantillas p JOIN jugadores j ON j.id = p.id_jugador WHERE p.id_equipo_fantasy = $1), 0
            ))
            ON CONFLICT (id_equipo_fantasy, id_jornada) DO UPDATE
              SET puntos_jornada = 0,
                  puntos_acumulados = EXCLUDED.puntos_acumulados,
                  valor_plantilla = EXCLUDED.valor_plantilla`,
-          [equipo.id, idJornada]
+          [equipo.id, idJornada, await acumuladoAnterior(equipo.id)]
         );
         continue;
       }
@@ -153,14 +170,7 @@ export async function calcularPuntosJornada(idJornada) {
         puntosTotales += pts;
       }
 
-      // Obtener puntos acumulados anteriores
-      const { rows: prevPuntos } = await client.query(
-        `SELECT COALESCE(MAX(puntos_acumulados), 0) AS acum
-         FROM puntuaciones_jornada
-         WHERE id_equipo_fantasy = $1`,
-        [equipo.id]
-      );
-      const puntosAcum = parseInt(prevPuntos[0].acum) + puntosTotales;
+      const puntosAcum = await acumuladoAnterior(equipo.id) + puntosTotales;
 
       // Calcular valor de plantilla
       const { rows: valorRows } = await client.query(

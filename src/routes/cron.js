@@ -69,6 +69,22 @@ export async function cronRoutes(app) {
     }
   });
 
+  // POST /api/cron/jornada-auto — importación automática (ver importarJornadaAutomatica)
+  // Para un cron externo (también despierta el servicio si Render lo ha dormido).
+  // Header: X-Cron-Secret: <CRON_SECRET>
+  app.post('/jornada-auto', async (req, reply) => {
+    const cronSecret = process.env.CRON_SECRET;
+    if (!cronSecret || req.headers['x-cron-secret'] !== cronSecret) {
+      return reply.code(401).send({ error: 'No autorizado' });
+    }
+    try {
+      return await importarJornadaAutomatica();
+    } catch (err) {
+      console.error('[CRON] Error en la importación automática:', err.message);
+      return reply.code(500).send({ error: err.message });
+    }
+  });
+
   // GET /api/cron/estado — estado del último import (para Railway healthcheck)
   app.get('/estado', async () => {
     const { rows } = await pool.query(
@@ -84,6 +100,97 @@ export async function cronRoutes(app) {
     );
     return { jornadas: rows };
   });
+}
+
+let importacionAutomaticaEnCurso = false;
+
+/**
+ * Importación automática de jornadas, pensada para lanzarse periódicamente sin parámetros:
+ * 1. Jornada a seguir: la EN_CURSO/PENDIENTE más baja o, si no hay, la siguiente a la última.
+ * 2. Si en asturfutbol.es aún no hay partidos jugados, no hace nada (ni crea la jornada).
+ * 3. Importa los partidos jugados que faltan (los ya importados no se vuelven a descargar).
+ * 4. Calcula puntos y precios y cierra la jornada solo cuando están todos los partidos jugados
+ *    e importados. Si hay un aplazado, se cierra igualmente en cuanto la jornada siguiente ha
+ *    empezado (el aplazado queda fuera; se puede importar luego desde el admin).
+ */
+export async function importarJornadaAutomatica() {
+  if (importacionAutomaticaEnCurso) return { ok: false, motivo: 'Ya hay una importación automática en curso' };
+  importacionAutomaticaEnCurso = true;
+  try {
+    const { rows: [{ numero: numJornada }] } = await pool.query(
+      `SELECT COALESCE(
+         (SELECT MIN(numero) FROM jornadas WHERE estado IN ('EN_CURSO', 'PENDIENTE')),
+         (SELECT COALESCE(MAX(numero), 0) + 1 FROM jornadas)
+       ) AS numero`
+    );
+
+    resetSession();
+    const { partidos } = parseJornada(await fetchJornada(numJornada));
+    const jugados = partidos.filter(p => p.jugado);
+    if (jugados.length === 0) {
+      return { ok: true, jornada: numJornada, motivo: 'Todavía no hay partidos jugados' };
+    }
+
+    const { rows: [{ id: idJornada }] } = await pool.query(
+      `INSERT INTO jornadas (numero, estado) VALUES ($1, 'EN_CURSO')
+       ON CONFLICT (numero) DO UPDATE
+         SET estado = CASE WHEN jornadas.estado = 'PENDIENTE' THEN 'EN_CURSO' ELSE jornadas.estado END
+       RETURNING id`,
+      [numJornada]
+    );
+
+    const { rows: yaImportados } = await pool.query(
+      `SELECT cod_acta FROM partidos WHERE id_jornada = $1 AND procesado AND cod_acta IS NOT NULL`,
+      [idJornada]
+    );
+    const importados = new Set(yaImportados.map(p => String(p.cod_acta)));
+
+    const nuevos = [];
+    const errores = [];
+    for (const partido of jugados.filter(p => !importados.has(String(p.codActa)))) {
+      try {
+        await importarPartido(idJornada, partido);
+        nuevos.push(`${partido.equipoLocal} - ${partido.equipoVisitante}`);
+      } catch (err) {
+        console.error(`[CRON] Error en acta ${partido.codActa}: ${err.message}`);
+        errores.push({ codActa: partido.codActa, error: err.message });
+      }
+    }
+
+    // ¿Se puede cerrar la jornada?
+    let motivoCierre = null;
+    if (jugados.length === partidos.length) {
+      motivoCierre = 'todos los partidos jugados';
+    } else {
+      const { partidos: siguientes } = parseJornada(await fetchJornada(numJornada + 1));
+      if (siguientes.some(p => p.jugado)) {
+        motivoCierre = `la jornada ${numJornada + 1} ya ha empezado (${partidos.length - jugados.length} partido(s) sin jugar quedan fuera)`;
+      }
+    }
+
+    let puntuacion = null;
+    if (motivoCierre && errores.length === 0) {
+      puntuacion = await calcularPuntosJornada(idJornada);
+      await actualizarPrecios(idJornada);
+      await pool.query(`UPDATE jornadas SET estado = 'CALCULADA' WHERE id = $1`, [idJornada]);
+      console.log(`[CRON] Jornada ${numJornada} calculada: ${motivoCierre}`);
+    }
+
+    return {
+      ok: true,
+      jornada: numJornada,
+      partidos_jugados: `${jugados.length}/${partidos.length}`,
+      partidos_importados_ahora: nuevos,
+      errores,
+      calculada: puntuacion !== null,
+      motivo: puntuacion
+        ? motivoCierre
+        : errores.length > 0 ? 'Hay actas con errores; se reintentará' : 'Faltan partidos por jugar',
+      puntuacion,
+    };
+  } finally {
+    importacionAutomaticaEnCurso = false;
+  }
 }
 
 /**

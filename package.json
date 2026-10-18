@@ -12,7 +12,8 @@
     "create-admin": "node src/db/create-admin.js",
     "fotos": "node scripts/importar-fotos.js",
     "fotos:completar": "node scripts/completar-fotos.js",
-    "clausulas:revertir": "node scripts/revertir-subidas-clausula.js"
+    "clausulas:revertir": "node scripts/revertir-subidas-clausula.js",
+    "precios:recalcular-subastas": "node scripts/recalcular-precios-subastas.js"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
