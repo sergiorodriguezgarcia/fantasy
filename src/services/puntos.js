@@ -18,6 +18,7 @@
  */
 
 import { pool } from '../db/pool.js';
+import { guardarAlineacionesCerradas } from './alineaciones.js';
 
 const PUNTOS = {
   // penalizacionEncajado: puntos negativos por cada N goles encajados
@@ -64,13 +65,16 @@ export function calcularPuntos(posicion, stats) {
  * Luego recalcula los puntos totales de cada equipo fantasy.
  */
 export async function calcularPuntosJornada(idJornada) {
+  // Si la jornada ya cerró alineaciones y aún no tiene foto (servicio dormido), tomarla ahora
+  await guardarAlineacionesCerradas();
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     // Bloquear la jornada: dos cálculos simultáneos (cron + admin) van de uno en uno
     const { rows: [jornada] } = await client.query(
-      `SELECT numero FROM jornadas WHERE id = $1 FOR UPDATE`, [idJornada]
+      `SELECT numero, alineaciones_guardadas FROM jornadas WHERE id = $1 FOR UPDATE`, [idJornada]
     );
     if (!jornada) throw new Error(`Jornada ${idJornada} no encontrada`);
 
@@ -116,9 +120,20 @@ export async function calcularPuntosJornada(idJornada) {
       return parseInt(rows[0].acum);
     };
 
+    // Alineaciones con las que se juega la jornada: la foto tomada al cierre si existe (los
+    // fichajes y ventas con la jornada empezada no cuentan); si no, la plantilla actual
+    const conFoto = jornada.alineaciones_guardadas;
+    const { rows: equiposConFoto } = conFoto
+      ? await client.query(
+          `SELECT DISTINCT id_equipo_fantasy FROM alineaciones_jornada WHERE id_jornada = $1`, [idJornada]
+        )
+      : { rows: [] };
+    const alineadosAlCierre = new Set(equiposConFoto.map(r => r.id_equipo_fantasy));
+
     for (const equipo of equipos) {
-      // No puntúa si no tiene alineación guardada o tiene saldo negativo
-      if (!equipo.formacion || equipo.saldo_disponible < 0) {
+      // No puntúa si no tenía alineación guardada (al cierre, si hay foto) o tiene saldo negativo
+      const sinAlineacion = conFoto ? !alineadosAlCierre.has(equipo.id) : !equipo.formacion;
+      if (sinAlineacion || equipo.saldo_disponible < 0) {
         await client.query(
           `INSERT INTO puntuaciones_jornada
              (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla)
@@ -137,10 +152,10 @@ export async function calcularPuntosJornada(idJornada) {
       const { rows: plantilla } = await client.query(
         `SELECT p.id_jugador, p.es_titular, p.es_capitan, j.posicion,
                 e.puntos, e.minutos_jugados
-         FROM plantillas p
+         FROM ${conFoto ? 'alineaciones_jornada' : 'plantillas'} p
          JOIN jugadores j ON j.id = p.id_jugador
          LEFT JOIN estadisticas e ON e.id_jugador = j.id AND e.id_jornada = $2
-         WHERE p.id_equipo_fantasy = $1`,
+         WHERE p.id_equipo_fantasy = $1 ${conFoto ? 'AND p.id_jornada = $2' : ''}`,
         [equipo.id, idJornada]
       );
 

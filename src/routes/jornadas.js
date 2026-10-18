@@ -1,4 +1,5 @@
 import { pool } from '../db/pool.js';
+import { origenAlineacion } from '../services/alineaciones.js';
 
 export async function jornadasRoutes(app) {
 
@@ -82,19 +83,20 @@ export async function jornadasRoutes(app) {
 
     if (pj.length === 0) return { puntos_jornada: 0, puntos_acumulados: 0, detalle: [] };
 
-    // Detalle de cada jugador de la plantilla en esa jornada
+    // Detalle de cada jugador con el que jugó esa jornada (foto del cierre) o, si no hay foto, la plantilla actual
+    const { tabla, filtro } = await origenAlineacion(idJornada, '$2');
     const { rows: detalle } = await pool.query(
       `SELECT j.id AS id_jugador, j.nombre, j.posicion, er.nombre AS equipo_real,
               p.es_capitan,
               e.minutos_jugados, e.goles, e.amarillas, e.rojas, e.porteria_cero,
               e.puntos AS puntos_base,
               CASE WHEN p.es_capitan THEN e.puntos * 2 ELSE e.puntos END AS puntos_efectivos
-       FROM plantillas p
+       FROM ${tabla} p
        JOIN jugadores j ON j.id = p.id_jugador
        LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
        LEFT JOIN estadisticas e ON e.id_jugador = j.id AND e.id_jornada = $2
        JOIN equipos_fantasy ef ON ef.id = p.id_equipo_fantasy
-       WHERE ef.id_usuario = $1`,
+       WHERE ef.id_usuario = $1 ${filtro}`,
       [req.user.id, idJornada]
     );
 

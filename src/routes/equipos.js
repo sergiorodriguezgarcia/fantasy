@@ -2,6 +2,9 @@ import { pool } from '../db/pool.js';
 import {
   pagarClausula, subirClausula, ErrorClausula, liberarJugadorDelMercado, clausulazosRestantes,
 } from '../services/clausulas.js';
+import {
+  guardarAlineacionesCerradas, jornadaConAlineacionesCerradas, proximoCierreAlineaciones, origenAlineacion,
+} from '../services/alineaciones.js';
 
 export async function equiposRoutes(app) {
 
@@ -31,7 +34,14 @@ export async function equiposRoutes(app) {
       [ef.id]
     );
 
-    return { ...ef, jugadores, clausulazos_restantes: await clausulazosRestantes(ef.id) };
+    // Estado del cierre de alineaciones: cerrada (jornada en juego) o cuándo se cierra la próxima
+    const cerrada = await jornadaConAlineacionesCerradas();
+    const proxima = cerrada ? null : await proximoCierreAlineaciones();
+    const alineaciones = cerrada
+      ? { cerrada: true, jornada: cerrada.numero, cierre: cerrada.cierre_alineaciones }
+      : { cerrada: false, jornada: proxima?.numero ?? null, cierre: proxima?.cierre_alineaciones ?? null };
+
+    return { ...ef, jugadores, alineaciones, clausulazos_restantes: await clausulazosRestantes(ef.id) };
   });
 
   // POST /api/equipos/mi-equipo/vender — vender un jugador al instante por su precio actual
@@ -55,6 +65,9 @@ export async function equiposRoutes(app) {
     if (plant.length === 0) return reply.code(404).send({ error: 'Jugador no encontrado en tu plantilla' });
     const { nombre, precio_actual } = plant[0];
     const monto = parseInt(precio_actual);
+
+    // Foto de las alineaciones antes de quitar el jugador
+    await guardarAlineacionesCerradas();
 
     const client = await pool.connect();
     try {
@@ -104,6 +117,13 @@ export async function equiposRoutes(app) {
   // PUT /api/equipos/mi-equipo/formacion — guardar alineación (formación, titulares y capitán)
   app.put('/mi-equipo/formacion', { preHandler: app.authenticate }, async (req, reply) => {
     const { formacion, titulares, capitan } = req.body ?? {};
+
+    const cerrada = await jornadaConAlineacionesCerradas();
+    if (cerrada) {
+      return reply.code(409).send({
+        error: `Las alineaciones están cerradas: la jornada ${cerrada.numero} ya ha empezado. Podrás cambiarla cuando se calcule.`,
+      });
+    }
 
     const FORMACIONES = {
       '4-3-3': { DEF: 4, MED: 3, DEL: 3 },
@@ -200,6 +220,7 @@ export async function equiposRoutes(app) {
     const idJugador = parseInt(req.body?.id_jugador);
     if (!idJugador) return reply.code(400).send({ error: 'id_jugador requerido' });
     try {
+      await guardarAlineacionesCerradas(); // foto de las alineaciones antes de mover el jugador
       return await pagarClausula(req.user.id, idJugador);
     } catch (err) {
       if (err instanceof ErrorClausula) return reply.code(err.status).send({ error: err.message });
@@ -238,17 +259,19 @@ export async function equiposRoutes(app) {
       [id, idJornada]
     );
 
+    // Alineación con la que jugó esa jornada (foto del cierre) o, si no hay foto, la actual
+    const { tabla, filtro } = await origenAlineacion(idJornada, '$2');
     const { rows: detalle } = await pool.query(
       `SELECT j.id AS id_jugador, j.nombre, j.posicion, er.nombre AS equipo_real,
               p.es_capitan,
               e.minutos_jugados, e.goles, e.amarillas, e.rojas, e.porteria_cero,
               e.puntos AS puntos_base,
               CASE WHEN p.es_capitan THEN e.puntos * 2 ELSE e.puntos END AS puntos_efectivos
-       FROM plantillas p
+       FROM ${tabla} p
        JOIN jugadores j ON j.id = p.id_jugador
        LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
        LEFT JOIN estadisticas e ON e.id_jugador = j.id AND e.id_jornada = $2
-       WHERE p.id_equipo_fantasy = $1
+       WHERE p.id_equipo_fantasy = $1 ${filtro}
        ORDER BY p.es_titular DESC, j.posicion, j.nombre`,
       [id, idJornada]
     );

@@ -1,6 +1,7 @@
 import { pool } from '../db/pool.js';
 import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 import { expirarOfertasVencidas } from './ofertas.js';
+import { guardarAlineacionesCerradas } from '../services/alineaciones.js';
 
 export async function mercadoRoutes(app) {
 
@@ -403,6 +404,9 @@ export async function mercadoRoutes(app) {
  * Llama a esta función desde un cron job o manualmente.
  */
 export async function resolverSubastasVencidas() {
+  // Foto de las alineaciones antes de mover jugadores (también sirve de comprobación periódica)
+  await guardarAlineacionesCerradas();
+
   // Aprovechar la misma pasada para liberar el saldo de ofertas de usuario caducadas
   const ofertasExpiradas = await expirarOfertasVencidas();
 

@@ -244,6 +244,21 @@ ALTER TABLE estadisticas ADD COLUMN IF NOT EXISTS goles_encajados INTEGER NOT NU
 ALTER TABLE jugadores ADD COLUMN IF NOT EXISTS foto      BYTEA;        -- foto extraída del acta (base64 decodificado)
 ALTER TABLE jugadores ADD COLUMN IF NOT EXISTS foto_mime VARCHAR(30);
 ALTER TABLE ofertas ADD COLUMN IF NOT EXISTS fecha_respuesta TIMESTAMPTZ;  -- cuándo se aceptó (histórico de fichajes)
+-- Cierre de alineaciones: inicio del primer partido de la jornada (lo rellena la importación automática)
+ALTER TABLE jornadas ADD COLUMN IF NOT EXISTS cierre_alineaciones TIMESTAMPTZ;
+-- TRUE cuando ya se guardó la foto de las alineaciones en alineaciones_jornada
+ALTER TABLE jornadas ADD COLUMN IF NOT EXISTS alineaciones_guardadas BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Foto de la plantilla de cada equipo al cerrarse las alineaciones: los puntos de la jornada se
+-- calculan con ella (los fichajes y ventas hechos con la jornada empezada no cuentan)
+CREATE TABLE IF NOT EXISTS alineaciones_jornada (
+  id_jornada          INTEGER NOT NULL REFERENCES jornadas(id) ON DELETE CASCADE,
+  id_equipo_fantasy   INTEGER NOT NULL REFERENCES equipos_fantasy(id) ON DELETE CASCADE,
+  id_jugador          INTEGER NOT NULL REFERENCES jugadores(id) ON DELETE CASCADE,
+  es_titular          BOOLEAN NOT NULL,
+  es_capitan          BOOLEAN NOT NULL,
+  PRIMARY KEY (id_jornada, id_equipo_fantasy, id_jugador)
+);
 -- Un jugador solo puede estar en una plantilla
 CREATE UNIQUE INDEX IF NOT EXISTS idx_plantillas_jugador_unico ON plantillas(id_jugador);
 ALTER TABLE partidos DROP CONSTRAINT IF EXISTS partidos_id_jornada_nombre_local_nombre_visitante_key;

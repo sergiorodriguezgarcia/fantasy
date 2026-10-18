@@ -1,5 +1,6 @@
 import { pool } from '../db/pool.js';
 import { clausulaInicial, finProteccion } from '../services/clausulas.js';
+import { guardarAlineacionesCerradas } from '../services/alineaciones.js';
 
 /**
  * Marca como EXPIRADA las ofertas de usuario pendientes cuya fecha_expiracion ya pasó y devuelve
@@ -234,6 +235,9 @@ export async function ofertasRoutes(app) {
       );
       if (comprRows.length === 0) return reply.code(400).send({ error: 'El comprador ya no existe' });
     }
+
+    // Foto de las alineaciones antes de mover el jugador
+    await guardarAlineacionesCerradas();
 
     const client = await pool.connect();
     try {

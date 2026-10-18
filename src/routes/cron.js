@@ -14,6 +14,7 @@ import { calcularPuntosJornada } from '../services/puntos.js';
 import { actualizarPrecios } from '../services/precios.js';
 import { normalizeName, generarCombinacionesNombre } from '../scraper/nombres.js';
 import { guardarFotosActa } from '../services/fotos.js';
+import { primerPartido } from '../services/alineaciones.js';
 
 export async function cronRoutes(app) {
 
@@ -107,7 +108,8 @@ let importacionAutomaticaEnCurso = false;
 /**
  * Importación automática de jornadas, pensada para lanzarse periódicamente sin parámetros:
  * 1. Jornada a seguir: la EN_CURSO/PENDIENTE más baja o, si no hay, la siguiente a la última.
- * 2. Si en asturfutbol.es aún no hay partidos jugados, no hace nada (ni crea la jornada).
+ * 2. En cuanto la jornada tiene calendario la crea (PENDIENTE) con el cierre de alineaciones en el
+ *    inicio del primer partido. Si aún no hay partidos jugados, no hace nada más.
  * 3. Importa los partidos jugados que faltan (los ya importados no se vuelven a descargar).
  * 4. Calcula puntos y precios y cierra la jornada solo cuando están todos los partidos jugados
  *    e importados. Si hay un aplazado, se cierra igualmente en cuanto la jornada siguiente ha
@@ -126,18 +128,28 @@ export async function importarJornadaAutomatica() {
 
     resetSession();
     const { partidos } = parseJornada(await fetchJornada(numJornada));
-    const jugados = partidos.filter(p => p.jugado);
-    if (jugados.length === 0) {
-      return { ok: true, jornada: numJornada, motivo: 'Todavía no hay partidos jugados' };
+    if (partidos.length === 0) {
+      return { ok: true, jornada: numJornada, motivo: 'La jornada no tiene partidos publicados' };
     }
+    const jugados = partidos.filter(p => p.jugado);
 
-    const { rows: [{ id: idJornada }] } = await pool.query(
-      `INSERT INTO jornadas (numero, estado) VALUES ($1, 'EN_CURSO')
+    // Crear la jornada en cuanto se publica su calendario, con el cierre de alineaciones en el
+    // inicio del primer partido. El cierre se actualiza si cambian los horarios, salvo que ya se
+    // haya guardado la foto de las alineaciones.
+    const { rows: [{ id: idJornada, cierre_alineaciones: cierre }] } = await pool.query(
+      `INSERT INTO jornadas (numero, estado, cierre_alineaciones)
+       VALUES ($1, $2, $3::timestamp AT TIME ZONE 'Europe/Madrid')
        ON CONFLICT (numero) DO UPDATE
-         SET estado = CASE WHEN jornadas.estado = 'PENDIENTE' THEN 'EN_CURSO' ELSE jornadas.estado END
-       RETURNING id`,
-      [numJornada]
+         SET estado = CASE WHEN jornadas.estado = 'PENDIENTE' THEN EXCLUDED.estado ELSE jornadas.estado END,
+             cierre_alineaciones = CASE WHEN jornadas.alineaciones_guardadas THEN jornadas.cierre_alineaciones
+                                        ELSE COALESCE(EXCLUDED.cierre_alineaciones, jornadas.cierre_alineaciones) END
+       RETURNING id, cierre_alineaciones`,
+      [numJornada, jugados.length > 0 ? 'EN_CURSO' : 'PENDIENTE', primerPartido(partidos)]
     );
+
+    if (jugados.length === 0) {
+      return { ok: true, jornada: numJornada, cierre_alineaciones: cierre, motivo: 'Todavía no hay partidos jugados' };
+    }
 
     const { rows: yaImportados } = await pool.query(
       `SELECT cod_acta FROM partidos WHERE id_jornada = $1 AND procesado AND cod_acta IS NOT NULL`,
