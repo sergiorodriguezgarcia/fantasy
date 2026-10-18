@@ -74,7 +74,7 @@ export async function jornadasRoutes(app) {
     const idJornada = parseInt(req.params.id);
 
     const { rows: pj } = await pool.query(
-      `SELECT pj.puntos_jornada, pj.puntos_acumulados, pj.valor_plantilla
+      `SELECT pj.puntos_jornada, pj.puntos_acumulados, pj.valor_plantilla, pj.premio
        FROM puntuaciones_jornada pj
        JOIN equipos_fantasy ef ON ef.id = pj.id_equipo_fantasy
        WHERE ef.id_usuario = $1 AND pj.id_jornada = $2`,

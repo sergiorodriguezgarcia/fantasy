@@ -249,6 +249,10 @@ ALTER TABLE jornadas ADD COLUMN IF NOT EXISTS cierre_alineaciones TIMESTAMPTZ;
 -- TRUE cuando ya se guardó la foto de las alineaciones en alineaciones_jornada
 ALTER TABLE jornadas ADD COLUMN IF NOT EXISTS alineaciones_guardadas BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Premio en dinero ya ingresado por la jornada (puntos × 100.000€). NULL en las jornadas calculadas
+-- antes de existir los premios: esas no se pagan aunque se recalculen
+ALTER TABLE puntuaciones_jornada ADD COLUMN IF NOT EXISTS premio BIGINT;
+
 -- Foto de la plantilla de cada equipo al cerrarse las alineaciones: los puntos de la jornada se
 -- calculan con ella (los fichajes y ventas hechos con la jornada empezada no cuentan)
 CREATE TABLE IF NOT EXISTS alineaciones_jornada (

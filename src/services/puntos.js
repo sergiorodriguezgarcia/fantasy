@@ -15,10 +15,15 @@
  * | Jugar ≥60 min                 |  2  |  2  |  2  |  2  |
  * | Jugar <60 min                 |  1  |  1  |  1  |  1  |
  * | Capitán (multiplicador)       | ×2  | ×2  | ×2  | ×2  |
+ *
+ * Premio: cada equipo cobra puntos_jornada × 100.000€ al calcularse la jornada.
  */
 
 import { pool } from '../db/pool.js';
 import { guardarAlineacionesCerradas } from './alineaciones.js';
+
+// Premio en dinero por cada punto conseguido en una jornada (21 puntos → 2.100.000€)
+export const PREMIO_POR_PUNTO = 100_000;
 
 const PUNTOS = {
   // penalizacionEncajado: puntos negativos por cada N goles encajados
@@ -130,21 +135,42 @@ export async function calcularPuntosJornada(idJornada) {
       : { rows: [] };
     const alineadosAlCierre = new Set(equiposConFoto.map(r => r.id_equipo_fantasy));
 
+    // Premio en dinero de la jornada: puntos × PREMIO_POR_PUNTO (nunca negativo). Al recalcular
+    // solo se ingresa (o descuenta) la diferencia con lo ya pagado. Las jornadas calculadas antes
+    // de existir los premios (premio NULL) no se pagan. Devuelve el premio a guardar.
+    const pagarPremio = async (idEquipo, puntos) => {
+      const { rows } = await client.query(
+        `SELECT premio FROM puntuaciones_jornada WHERE id_equipo_fantasy = $1 AND id_jornada = $2`,
+        [idEquipo, idJornada]
+      );
+      if (rows.length > 0 && rows[0].premio === null) return null;
+      const yaPagado = Number(rows[0]?.premio ?? 0);
+      const premio = Math.max(0, puntos) * PREMIO_POR_PUNTO;
+      if (premio !== yaPagado) {
+        await client.query(
+          `UPDATE equipos_fantasy SET saldo_disponible = saldo_disponible + $1 WHERE id = $2`,
+          [premio - yaPagado, idEquipo]
+        );
+      }
+      return premio;
+    };
+
     for (const equipo of equipos) {
       // No puntúa si no tenía alineación guardada (al cierre, si hay foto) o tiene saldo negativo
       const sinAlineacion = conFoto ? !alineadosAlCierre.has(equipo.id) : !equipo.formacion;
       if (sinAlineacion || equipo.saldo_disponible < 0) {
         await client.query(
           `INSERT INTO puntuaciones_jornada
-             (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla)
+             (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla, premio)
            VALUES ($1, $2, 0, $3, COALESCE(
              (SELECT SUM(j.precio_actual) FROM plantillas p JOIN jugadores j ON j.id = p.id_jugador WHERE p.id_equipo_fantasy = $1), 0
-           ))
+           ), $4)
            ON CONFLICT (id_equipo_fantasy, id_jornada) DO UPDATE
              SET puntos_jornada = 0,
                  puntos_acumulados = EXCLUDED.puntos_acumulados,
-                 valor_plantilla = EXCLUDED.valor_plantilla`,
-          [equipo.id, idJornada, await acumuladoAnterior(equipo.id)]
+                 valor_plantilla = EXCLUDED.valor_plantilla,
+                 premio = EXCLUDED.premio`,
+          [equipo.id, idJornada, await acumuladoAnterior(equipo.id), await pagarPremio(equipo.id, 0)]
         );
         continue;
       }
@@ -171,7 +197,7 @@ export async function calcularPuntosJornada(idJornada) {
         // Sustitución automática: si el titular no jugó (0 min), buscar suplente de su posición
         if ((jugador.minutos_jugados ?? 0) === 0) {
           const suplente = suplentes.find(
-            (s) => s.posicion === jugador.posicion && (s.minutos_jugados ?? 0) > 0
+            (s) => !s._usado && s.posicion === jugador.posicion && (s.minutos_jugados ?? 0) > 0
           );
           if (suplente) {
             pts = suplente.puntos ?? 0;
@@ -197,15 +223,18 @@ export async function calcularPuntosJornada(idJornada) {
       );
       const valorPlantilla = parseInt(valorRows[0].valor);
 
+      const premio = await pagarPremio(equipo.id, puntosTotales);
+
       await client.query(
         `INSERT INTO puntuaciones_jornada
-           (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla)
-         VALUES ($1, $2, $3, $4, $5)
+           (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla, premio)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (id_equipo_fantasy, id_jornada) DO UPDATE
            SET puntos_jornada = EXCLUDED.puntos_jornada,
                puntos_acumulados = EXCLUDED.puntos_acumulados,
-               valor_plantilla = EXCLUDED.valor_plantilla`,
-        [equipo.id, idJornada, puntosTotales, puntosAcum, valorPlantilla]
+               valor_plantilla = EXCLUDED.valor_plantilla,
+               premio = EXCLUDED.premio`,
+        [equipo.id, idJornada, puntosTotales, puntosAcum, valorPlantilla, premio]
       );
 
       totalEquipos++;
