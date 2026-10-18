@@ -1,7 +1,7 @@
 /**
  * Tareas programadas (cron jobs internos del servidor).
  *
- * - Cada minuto: comprobar subastas vencidas y resolverlas.
+ * - Cada minuto: comprobar subastas vencidas y resolverlas (y caducar ofertas de usuario vencidas).
  * - Cada minuto: comprobar si son las 17:00 y abrir ventana de mercado diaria.
  *
  * En producción se puede reemplazar por un cron externo (Railway cron).
@@ -17,6 +17,9 @@ export function iniciarCrons() {
       const resultado = await resolverSubastasVencidas();
       if (resultado.procesadas > 0) {
         console.log(`[CRON] Subastas resueltas: ${resultado.procesadas}`, resultado.resultados);
+      }
+      if (resultado.ofertas_expiradas.length > 0) {
+        console.log('[CRON] Ofertas caducadas, saldo devuelto:', resultado.ofertas_expiradas);
       }
     } catch (err) {
       console.error('[CRON] Error resolviendo subastas:', err.message);

@@ -1,6 +1,34 @@
 import { pool } from '../db/pool.js';
 import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 
+/**
+ * Marca como EXPIRADA las ofertas de usuario pendientes cuya fecha_expiracion ya pasó y devuelve
+ * su importe bloqueado al comprador. Sin esto, una oferta que el vendedor no responde se queda
+ * PENDIENTE (oculta en los listados) con el saldo del comprador bloqueado para siempre.
+ * Una sola sentencia: el WHERE estado = 'PENDIENTE' evita devolver dos veces si se lanza en paralelo.
+ */
+export async function expirarOfertasVencidas() {
+  const { rows } = await pool.query(
+    `WITH vencidas AS (
+       UPDATE ofertas SET estado = 'EXPIRADA'
+       WHERE tipo = 'USUARIO' AND estado = 'PENDIENTE' AND fecha_expiracion <= NOW()
+       RETURNING id_equipo_comprador, monto
+     ), por_equipo AS (
+       SELECT id_equipo_comprador, SUM(monto) AS total, COUNT(*) AS n
+       FROM vencidas
+       WHERE id_equipo_comprador IS NOT NULL
+       GROUP BY id_equipo_comprador
+     )
+     UPDATE equipos_fantasy ef
+     SET saldo_disponible = ef.saldo_disponible + pe.total,
+         saldo_bloqueado  = ef.saldo_bloqueado  - pe.total
+     FROM por_equipo pe
+     WHERE ef.id = pe.id_equipo_comprador
+     RETURNING ef.id AS id_equipo, pe.n::int AS ofertas, pe.total AS devuelto`
+  );
+  return rows;
+}
+
 export async function ofertasRoutes(app) {
 
   // GET /api/ofertas/recibidas — ofertas pendientes para mis jugadores

@@ -1,5 +1,6 @@
 import { pool } from '../db/pool.js';
 import { clausulaInicial, finProteccion } from '../services/clausulas.js';
+import { expirarOfertasVencidas } from './ofertas.js';
 
 export async function mercadoRoutes(app) {
 
@@ -402,6 +403,9 @@ export async function mercadoRoutes(app) {
  * Llama a esta función desde un cron job o manualmente.
  */
 export async function resolverSubastasVencidas() {
+  // Aprovechar la misma pasada para liberar el saldo de ofertas de usuario caducadas
+  const ofertasExpiradas = await expirarOfertasVencidas();
+
   const { rows: vencidas } = await pool.query(
     `SELECT id, tipo, id_jugador, id_vendedor, precio_minimo
      FROM subastas
@@ -543,7 +547,7 @@ export async function resolverSubastasVencidas() {
     }
   }
 
-  return { procesadas: resultados.length, resultados };
+  return { procesadas: resultados.length, resultados, ofertas_expiradas: ofertasExpiradas };
 }
 
 /**
