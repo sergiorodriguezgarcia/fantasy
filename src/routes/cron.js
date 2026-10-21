@@ -335,18 +335,22 @@ async function importarPartido(idJornada, partido) {
         // Buscar jugador en BD por cod_jugador o nombre.
         // El scraper devuelve "APELLIDO1 APELLIDO2, NOMBRE" pero la BD tiene "NOMBRE APELLIDO1".
         // Generamos todas las combinaciones posibles para hacer match.
+        // Por nombre solo casan jugadores sin cod_jugador (o con el mismo): si no, un jugador del acta
+        // que no está en la BD se lleva los minutos de otro con el mismo nombre y primer apellido.
         const equipoNorm = normalizeName(equipoData.nombre);
         const candidatos = generarCombinacionesNombre(j.nombre);
         const { rows: jRows } = await client.query(
           `SELECT id FROM jugadores
            WHERE (cod_jugador = $1 AND cod_jugador IS NOT NULL)
               OR (
-                translate(upper(nombre), 'ÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛÃÕÑÇ', 'AEIOUAEIOUAEIOUAEIOUAONC') = ANY($2::text[])
+                (cod_jugador IS NULL OR cod_jugador = $1)
+                AND translate(upper(nombre), 'ÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛÃÕÑÇ', 'AEIOUAEIOUAEIOUAEIOUAONC') = ANY($2::text[])
                 AND id_equipo_real IN (
                   SELECT id FROM equipos_reales
                   WHERE translate(upper(nombre), 'ÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÂÊÎÔÛÃÕÑÇ', 'AEIOUAEIOUAEIOUAEIOUAONC') = $3
                 )
               )
+           ORDER BY (cod_jugador = $1) DESC NULLS LAST
            LIMIT 1`,
           [j.id, candidatos, equipoNorm]
         );
