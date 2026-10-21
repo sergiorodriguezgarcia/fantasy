@@ -2,6 +2,7 @@ import { pool } from '../db/pool.js';
 import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 import { expirarOfertasVencidas } from './ofertas.js';
 import { guardarAlineacionesCerradas } from '../services/alineaciones.js';
+import { avisarSubastaGanada } from '../services/email.js';
 
 // Hora a la que cierran todas las subastas (hora española)
 const HORA_CIERRE = '19:00';
@@ -439,6 +440,7 @@ export async function resolverSubastasVencidas() {
   const resultados = [];
 
   for (const sub of vencidas) {
+    let aviso = null; // ganador al que avisar por correo, solo si la transacción se confirma
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -555,9 +557,12 @@ export async function resolverSubastasVencidas() {
         );
 
         resultados.push({ id: sub.id, resultado: 'RESUELTA', precio: ganador.monto });
+        aviso = { idEquipo: ganador.id_equipo_fantasy, idJugador: sub.id_jugador, monto: ganador.monto };
       }
 
       await client.query('COMMIT');
+      // Sin esperar: un fallo de correo no debe frenar la resolución del resto de subastas
+      if (aviso) avisarSubastaGanada(aviso);
     } catch (err) {
       await client.query('ROLLBACK');
       console.error(`Error resolviendo subasta ${sub.id}:`, err);

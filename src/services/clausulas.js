@@ -13,6 +13,7 @@
  */
 
 import { pool } from '../db/pool.js';
+import { avisarClausulazo } from './email.js';
 
 export const CLAUSULA = {
   MULTIPLICADOR: 1.5,
@@ -187,6 +188,8 @@ export async function pagarClausula(idUsuario, idJugador) {
     );
 
     await client.query('COMMIT');
+    // Aviso por correo al dueño anterior, sin esperar (un fallo de correo no afecta al clausulazo)
+    avisarClausulazo({ idVendedor, idComprador: comprador.id, idJugador, monto });
     return {
       ok: true,
       monto,
