@@ -14,6 +14,7 @@ import { pool } from '../db/pool.js';
 import { calcularPuntosJornada, calcularPuntos } from '../services/puntos.js';
 import { actualizarPrecios } from '../services/precios.js';
 import { abrirVentanaMercado } from './mercado.js';
+import { liberarJugadorDelMercado } from '../services/clausulas.js';
 import { fetchJornada, fetchActa } from '../scraper/fetcher.js';
 import { parseJornada, parseActa } from '../scraper/parser.js';
 
@@ -68,9 +69,31 @@ export async function adminRoutes(app) {
     if (id === req.user.id) {
       return reply.code(400).send({ error: 'No puedes eliminar tu propia cuenta de admin' });
     }
-    const { rowCount } = await pool.query(`DELETE FROM usuarios WHERE id = $1`, [id]);
-    if (rowCount === 0) return reply.code(404).send({ error: 'Usuario no encontrado' });
-    return { ok: true };
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Antes del borrado en cascada: cerrar las subastas y ofertas de sus jugadores devolviendo
+      // el saldo bloqueado a los demás pujadores y compradores (la cascada borraría sus pujas sin devolverlo)
+      const { rows: jugadores } = await client.query(
+        `SELECT p.id_jugador FROM plantillas p
+         JOIN equipos_fantasy ef ON ef.id = p.id_equipo_fantasy
+         WHERE ef.id_usuario = $1`, [id]
+      );
+      for (const j of jugadores) await liberarJugadorDelMercado(client, j.id_jugador);
+
+      const { rowCount } = await client.query(`DELETE FROM usuarios WHERE id = $1`, [id]);
+      if (rowCount === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(404).send({ error: 'Usuario no encontrado' });
+      }
+      await client.query('COMMIT');
+      return { ok: true };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   });
 
   // ── Jugadores ─────────────────────────────────────────────
@@ -120,11 +143,26 @@ export async function adminRoutes(app) {
     if (parseInt(stats[0].total) > 0) {
       return reply.code(409).send({ error: 'No se puede eliminar: el jugador tiene estadísticas registradas' });
     }
-    // Eliminar de plantillas fantasy si está en alguna
-    await pool.query(`DELETE FROM plantillas WHERE id_jugador = $1`, [id]);
-    const { rowCount } = await pool.query(`DELETE FROM jugadores WHERE id = $1`, [id]);
-    if (rowCount === 0) return reply.code(404).send({ error: 'Jugador no encontrado' });
-    return { ok: true };
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Devolver pujas y ofertas abiertas antes de que la cascada borre sus subastas y pujas
+      await liberarJugadorDelMercado(client, id);
+      // Eliminar de plantillas fantasy si está en alguna
+      await client.query(`DELETE FROM plantillas WHERE id_jugador = $1`, [id]);
+      const { rowCount } = await client.query(`DELETE FROM jugadores WHERE id = $1`, [id]);
+      if (rowCount === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(404).send({ error: 'Jugador no encontrado' });
+      }
+      await client.query('COMMIT');
+      return { ok: true };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   });
 
   // POST /api/admin/equipos — añadir equipo real
