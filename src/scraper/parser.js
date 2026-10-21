@@ -94,7 +94,7 @@ export function parseActa(html, codActa) {
 
   $('h4').each((_, h4) => {
     if (!$(h4).text().trim().includes('Sustituciones')) return;
-    const susts = parseSustituciones($, $(h4).next('table'));
+    const susts = parseSustituciones($, $(h4).nextUntil('h4', 'table'));
     for (const s of susts) {
       assignToEquipo(equiposData, (j) => normEq(j.nombre, s.jugadorSaleNombre), (eq) => eq.sustituciones.push(s));
     }
@@ -190,13 +190,29 @@ function parseSustituciones($, table) {
   return sustituciones;
 }
 
+// Minutos = salida - entrada. Los titulares entran en el 0 y los suplentes solo si hay sustitución;
+// una roja corta la participación en el minuto de la tarjeta.
 function calcularMinutos(equipo) {
+  for (const j of equipo.jugadores) {
+    j.entrada = j.esTitular ? 0 : null;
+    j.salida = 90;
+  }
   for (const s of equipo.sustituciones) {
     const min  = s.minuto ?? 90;
     const sale  = equipo.jugadores.find((j) => normEq(j.nombre, s.jugadorSaleNombre));
     const entra = equipo.jugadores.find((j) => normEq(j.nombre, s.jugadorEntreNombre));
-    if (sale)  sale.minutosJugados  = min;
-    if (entra) entra.minutosJugados = 90 - min;
+    if (sale)  sale.salida  = min;
+    if (entra) entra.entrada = min;
+  }
+  for (const t of equipo.tarjetas) {
+    if (t.tipo !== 'roja' || t.minuto === null) continue;
+    const j = equipo.jugadores.find((x) => normEq(x.nombre, t.jugadorNombre));
+    if (j) j.salida = Math.min(j.salida, t.minuto);
+  }
+  for (const j of equipo.jugadores) {
+    j.minutosJugados = j.entrada === null ? 0 : Math.max(0, j.salida - j.entrada);
+    delete j.entrada;
+    delete j.salida;
   }
 }
 
