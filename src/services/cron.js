@@ -2,7 +2,7 @@
  * Tareas programadas (cron jobs internos del servidor).
  *
  * - Cada minuto: comprobar subastas vencidas y resolverlas (y caducar ofertas de usuario vencidas).
- * - Cada minuto: comprobar si son las 17:00 y abrir ventana de mercado diaria.
+ * - Cada minuto: comprobar si son las 19:00 (hora española) y abrir ventana de mercado diaria.
  * - Cada 30 minutos: importar la jornada en juego y calcularla cuando acabe.
  *
  * Solo corren mientras el servidor está despierto. En Render free el servicio se duerme tras
@@ -47,13 +47,16 @@ export function iniciarCrons() {
     }
   }, 60_000);
 
-  // Abrir ventana de mercado diaria a las 17:00 (comprueba cada minuto)
+  // Abrir ventana de mercado diaria a las 19:00 hora española, cuando cierra la anterior (comprueba cada minuto)
   setInterval(async () => {
     try {
-      const ahora = new Date();
-      // Disparar entre las 17:00 y las 17:29 (ventana de 30 min por si el servicio dormía)
+      // Hora en Madrid: el servidor corre en UTC y así no le afecta el cambio de hora
+      const [hora, minuto] = new Intl.DateTimeFormat('es-ES', {
+        timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+      }).format(new Date()).split(':').map(Number);
+      // Disparar entre las 19:00 y las 19:29 (ventana de 30 min por si el servicio dormía)
       // La función abrirVentanaMercado ya evita abrir dos veces el mismo día
-      if (ahora.getHours() !== 17 || ahora.getMinutes() > 29) return;
+      if (hora !== 19 || minuto > 29) return;
 
       // Leer configuración
       const { rows } = await pool.query(

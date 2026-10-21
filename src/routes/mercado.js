@@ -3,6 +3,22 @@ import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 import { expirarOfertasVencidas } from './ofertas.js';
 import { guardarAlineacionesCerradas } from '../services/alineaciones.js';
 
+// Hora a la que cierran todas las subastas (hora española)
+const HORA_CIERRE = '19:00';
+
+// Próximo cierre a las HORA_CIERRE en Europe/Madrid, sin depender de la zona horaria del servidor
+// ni del cambio de hora. Hoy si aún no ha pasado la hora; si no (o con diaSiguiente), mañana.
+async function proximoCierre({ diaSiguiente = false } = {}) {
+  const { rows: [r] } = await pool.query(
+    `SELECT ((NOW() AT TIME ZONE 'Europe/Madrid')::date
+             + CASE WHEN $1::boolean OR (NOW() AT TIME ZONE 'Europe/Madrid')::time >= $2::time
+                    THEN 1 ELSE 0 END
+             + $2::time) AT TIME ZONE 'Europe/Madrid' AS cierre`,
+    [diaSiguiente, HORA_CIERRE]
+  );
+  return r.cierre;
+}
+
 export async function mercadoRoutes(app) {
 
   // GET /api/mercado/subastas — subastas activas del día
@@ -200,9 +216,8 @@ export async function mercadoRoutes(app) {
       return reply.code(400).send({ error: 'Ya tienes un jugador en subasta. Solo puedes tener una activa a la vez.' });
     }
 
-    // Crear subasta que cierra a las 23:59:59 de hoy
-    const hoy = new Date();
-    const cierre = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 23, 59, 59);
+    // Crear subasta que cierra en el próximo cierre diario (19:00 hora española)
+    const cierre = await proximoCierre();
 
     const { rows: sub } = await pool.query(
       `INSERT INTO subastas (id_jugador, id_vendedor, precio_minimo, fecha_inicio, fecha_cierre)
@@ -390,7 +405,7 @@ export async function mercadoRoutes(app) {
     return resolverSubastasVencidas();
   });
 
-  // POST /api/mercado/cron/abrir-ventana — llamado por cron externo a las 17:00
+  // POST /api/mercado/cron/abrir-ventana — llamado por cron externo a las 19:00 (hora española)
   app.post('/cron/abrir-ventana', async (req, reply) => {
     const secret = process.env.CRON_SECRET;
     if (!secret || req.headers.authorization !== `Bearer ${secret}`) {
@@ -559,7 +574,7 @@ export async function resolverSubastasVencidas() {
  * Abre la ventana de mercado diaria:
  * - Selecciona agentes libres (jugadores sin propietario activo)
  * - Crea subastas de tipo SISTEMA con precio_minimo = precio_actual
- * - Cierre: mañana a la misma hora de apertura (24h)
+ * - Cierre: mañana a las 19:00 hora española
  * - No crea subastas si ya hay una ventana abierta hoy
  */
 export async function abrirVentanaMercado({ n = 5 } = {}) {
@@ -567,17 +582,14 @@ export async function abrirVentanaMercado({ n = 5 } = {}) {
   const { rows: yaAbierta } = await pool.query(
     `SELECT COUNT(*) AS total FROM subastas
      WHERE tipo = 'SISTEMA' AND estado = 'ACTIVA'
-       AND DATE(fecha_inicio AT TIME ZONE 'Europe/Madrid') = CURRENT_DATE`
+       AND DATE(fecha_inicio AT TIME ZONE 'Europe/Madrid') = (NOW() AT TIME ZONE 'Europe/Madrid')::date`
   );
   if (parseInt(yaAbierta[0].total) > 0) {
     return { ok: false, motivo: 'Ya hay una ventana de mercado abierta hoy' };
   }
 
-  // fecha_cierre = mañana a las 17:00
-  const ahora = new Date();
-  const cierre = new Date(ahora);
-  cierre.setDate(cierre.getDate() + 1);
-  cierre.setHours(17, 0, 0, 0);
+  // fecha_cierre = mañana a las 19:00 hora española
+  const cierre = await proximoCierre({ diaSiguiente: true });
 
   // === SUBASTAS para agentes libres ===
   const { rows: libres } = await pool.query(
