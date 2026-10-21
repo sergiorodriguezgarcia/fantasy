@@ -20,6 +20,7 @@ export async function mercadoRoutes(app) {
               j.posicion, er.nombre AS equipo_real,
               j.precio_actual,
               s.precio_minimo, s.fecha_cierre,
+              GREATEST(s.precio_minimo, j.precio_actual) AS puja_minima,
               ef_v.nombre AS vendedor,
               (s.id_vendedor = $1) AS es_mia,
               (
@@ -184,10 +185,10 @@ export async function mercadoRoutes(app) {
       return reply.code(400).send({ error: 'Ese jugador no está en tu plantilla' });
     }
 
-    const precioMinAceptable = Math.round(parseInt(plant[0].precio_actual) * 0.9);
-    if (precio_minimo < precioMinAceptable) {
+    const precioActual = Number(plant[0].precio_actual);
+    if (precio_minimo < precioActual) {
       return reply.code(400).send({
-        error: `El precio mínimo no puede ser inferior al 90% del valor actual del jugador (${precioMinAceptable.toLocaleString()}€)`,
+        error: `El precio mínimo no puede ser inferior al valor actual del jugador (${precioActual.toLocaleString('es-ES')}€)`,
       });
     }
 
@@ -227,8 +228,11 @@ export async function mercadoRoutes(app) {
     const comprador = ef[0];
 
     const { rows: sub } = await pool.query(
-      `SELECT id, id_vendedor, id_jugador, precio_minimo, fecha_cierre, estado
-       FROM subastas WHERE id = $1`,
+      `SELECT s.id, s.id_vendedor, s.id_jugador, s.precio_minimo, s.fecha_cierre, s.estado,
+              GREATEST(s.precio_minimo, j.precio_actual) AS puja_minima
+       FROM subastas s
+       JOIN jugadores j ON j.id = s.id_jugador
+       WHERE s.id = $1`,
       [idSubasta]
     );
     if (sub.length === 0) return reply.code(404).send({ error: 'Subasta no encontrada' });
@@ -241,10 +245,11 @@ export async function mercadoRoutes(app) {
       return reply.code(400).send({ error: 'No puedes pujar en tu propia subasta' });
     }
 
-    // Verificar que el monto supera el precio mínimo de la subasta (basado en el valor del jugador)
-    if (monto < subasta.precio_minimo) {
+    // Mínimo: el valor actual del jugador (o el precio mínimo de la subasta si es mayor)
+    const pujaMinima = Number(subasta.puja_minima);
+    if (monto < pujaMinima) {
       return reply.code(400).send({
-        error: `La puja mínima es ${parseInt(subasta.precio_minimo).toLocaleString()}€`,
+        error: `La puja no puede ser inferior al valor actual del jugador (${pujaMinima.toLocaleString('es-ES')}€)`,
       });
     }
 
@@ -553,7 +558,7 @@ export async function resolverSubastasVencidas() {
 /**
  * Abre la ventana de mercado diaria:
  * - Selecciona agentes libres (jugadores sin propietario activo)
- * - Crea subastas de tipo SISTEMA con precio_minimo = precio_actual * 0.5
+ * - Crea subastas de tipo SISTEMA con precio_minimo = precio_actual
  * - Cierre: mañana a la misma hora de apertura (24h)
  * - No crea subastas si ya hay una ventana abierta hoy
  */
@@ -587,7 +592,7 @@ export async function abrirVentanaMercado({ n = 5 } = {}) {
 
   const creadas = [];
   for (const jugador of libres) {
-    const precioMinimo = Math.round(jugador.precio_actual * 0.5);
+    const precioMinimo = Number(jugador.precio_actual);
     const { rows } = await pool.query(
       `INSERT INTO subastas
          (id_jugador, id_vendedor, precio_minimo, fecha_inicio, fecha_cierre, tipo)
