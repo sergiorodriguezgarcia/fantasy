@@ -733,9 +733,16 @@ export async function adminRoutes(app) {
   // ── Mercado diario ────────────────────────────────────────
 
   // POST /api/admin/mercado/abrir-ventana — abre una ventana de mercado manual
-  // Body opcional: { n: número de jugadores (default 5) }
+  // Body opcional: { n: número de jugadores (default: jugadores_por_ventana de config_mercado) }
   app.post('/mercado/abrir-ventana', { preHandler: app.requireAdmin }, async (req, reply) => {
-    const n = parseInt(req.body?.n ?? 5);
+    let n = req.body?.n;
+    if (n === undefined) {
+      const { rows } = await pool.query(
+        `SELECT valor FROM config_mercado WHERE clave = 'jugadores_por_ventana'`
+      );
+      n = rows[0]?.valor ?? '5';
+    }
+    n = parseInt(n);
     if (isNaN(n) || n < 1 || n > 50) {
       return reply.code(400).send({ error: 'n debe ser entre 1 y 50' });
     }
