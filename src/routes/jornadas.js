@@ -25,6 +25,18 @@ export async function jornadasRoutes(app) {
     return rows[0] ?? null;
   });
 
+  // GET /api/jornadas/proxima — partidos (equipos, escudos y horario) de la jornada por jugar o en juego
+  app.get('/proxima', async () => {
+    const { rows } = await pool.query(
+      `SELECT id, numero, estado, cierre_alineaciones, calendario AS partidos
+       FROM jornadas
+       WHERE estado IN ('PENDIENTE', 'EN_CURSO') AND calendario IS NOT NULL
+       ORDER BY numero
+       LIMIT 1`
+    );
+    return rows[0] ?? null;
+  });
+
   // GET /api/jornadas/:id — detalle de jornada con partidos
   app.get('/:id', async (req, reply) => {
     const id = parseInt(req.params.id);

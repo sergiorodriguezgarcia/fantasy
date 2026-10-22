@@ -105,6 +105,28 @@ export async function cronRoutes(app) {
 let importacionAutomaticaEnCurso = false;
 
 /**
+ * Calendario del scraper → lo que se guarda en jornadas.calendario, ordenado por inicio.
+ * fecha 'YYYY-MM-DD' y hora 'HH:MM' en hora de Madrid; hora null si aún no está fijada.
+ */
+function calendarioJornada(calendario) {
+  return calendario
+    .map(p => {
+      const f = (p.fecha ?? '').match(/(\d{2})-(\d{2})-(\d{4})/);
+      const h = (p.hora ?? '').match(/(\d{1,2}):(\d{2})/);
+      return {
+        local:            p.equipoLocal,
+        visitante:        p.equipoVisitante,
+        escudo_local:     p.escudoLocal,
+        escudo_visitante: p.escudoVisitante,
+        fecha:            f ? `${f[3]}-${f[2]}-${f[1]}` : null,
+        hora:             h ? `${h[1].padStart(2, '0')}:${h[2]}` : null,
+        jugado:           p.jugado,
+      };
+    })
+    .sort((a, b) => `${a.fecha ?? '9999'} ${a.hora ?? '99'}`.localeCompare(`${b.fecha ?? '9999'} ${b.hora ?? '99'}`));
+}
+
+/**
  * Importación automática de jornadas, pensada para lanzarse periódicamente sin parámetros:
  * 1. Jornada a seguir: la EN_CURSO/PENDIENTE más baja o, si no hay, la siguiente a la última.
  * 2. En cuanto la jornada tiene calendario la crea (PENDIENTE) con el cierre de alineaciones en el
@@ -126,24 +148,28 @@ export async function importarJornadaAutomatica() {
     );
 
     resetSession();
-    const { partidos } = parseJornada(await fetchJornada(numJornada));
-    if (partidos.length === 0) {
+    const { partidos, calendario } = parseJornada(await fetchJornada(numJornada));
+    if (calendario.length === 0) {
       return { ok: true, jornada: numJornada, motivo: 'La jornada no tiene partidos publicados' };
     }
     const jugados = partidos.filter(p => p.jugado);
 
-    // Crear la jornada en cuanto se publica su calendario, con el cierre de alineaciones en el
-    // inicio del primer partido. El cierre se actualiza si cambian los horarios, salvo que ya se
-    // haya guardado la foto de las alineaciones.
+    // Crear la jornada en cuanto se publica su calendario (aunque aún no haya previos), con el
+    // cierre de alineaciones en el inicio del primer partido con previo (sin previos aún no hay
+    // cierre: muchas veces tampoco hay horas y el cierre caería a las 00:00). El cierre se actualiza
+    // si cambian los horarios, salvo que ya se haya guardado la foto de las alineaciones. El
+    // calendario se refresca siempre para mostrar los horarios al día.
     const { rows: [{ id: idJornada, cierre_alineaciones: cierre }] } = await pool.query(
-      `INSERT INTO jornadas (numero, estado, cierre_alineaciones)
-       VALUES ($1, $2, $3::timestamp AT TIME ZONE 'Europe/Madrid')
+      `INSERT INTO jornadas (numero, estado, cierre_alineaciones, calendario)
+       VALUES ($1, $2, $3::timestamp AT TIME ZONE 'Europe/Madrid', $4::jsonb)
        ON CONFLICT (numero) DO UPDATE
          SET estado = CASE WHEN jornadas.estado = 'PENDIENTE' THEN EXCLUDED.estado ELSE jornadas.estado END,
              cierre_alineaciones = CASE WHEN jornadas.alineaciones_guardadas THEN jornadas.cierre_alineaciones
-                                        ELSE COALESCE(EXCLUDED.cierre_alineaciones, jornadas.cierre_alineaciones) END
+                                        ELSE COALESCE(EXCLUDED.cierre_alineaciones, jornadas.cierre_alineaciones) END,
+             calendario = EXCLUDED.calendario
        RETURNING id, cierre_alineaciones`,
-      [numJornada, jugados.length > 0 ? 'EN_CURSO' : 'PENDIENTE', primerPartido(partidos)]
+      [numJornada, jugados.length > 0 ? 'EN_CURSO' : 'PENDIENTE', primerPartido(partidos),
+       JSON.stringify(calendarioJornada(calendario))]
     );
 
     if (jugados.length === 0) {

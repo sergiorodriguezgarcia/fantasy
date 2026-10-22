@@ -248,6 +248,9 @@ ALTER TABLE ofertas ADD COLUMN IF NOT EXISTS fecha_respuesta TIMESTAMPTZ;  -- cu
 ALTER TABLE jornadas ADD COLUMN IF NOT EXISTS cierre_alineaciones TIMESTAMPTZ;
 -- TRUE cuando ya se guardó la foto de las alineaciones en alineaciones_jornada
 ALTER TABLE jornadas ADD COLUMN IF NOT EXISTS alineaciones_guardadas BOOLEAN NOT NULL DEFAULT FALSE;
+-- Calendario de la jornada tal y como lo publica asturfutbol.es (equipos, escudos, fecha y hora);
+-- lo refresca la importación automática para mostrar los próximos partidos
+ALTER TABLE jornadas ADD COLUMN IF NOT EXISTS calendario JSONB;
 
 -- Premio en dinero ya ingresado por la jornada (puntos × 100.000€). NULL en las jornadas calculadas
 -- antes de existir los premios: esas no se pagan aunque se recalculen

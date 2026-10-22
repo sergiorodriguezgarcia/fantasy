@@ -7,6 +7,8 @@ export function parseJornada(html) {
   const jornada = parseInt(jornadaText.match(/\d+/)?.[0] ?? '0');
 
   const partidos = [];
+  // Todos los partidos de la jornada, tengan o no previo/acta publicado (para mostrar el calendario)
+  const calendario = [];
 
   $('table.table-bordered tr').each((_, trEl) => {
     const tr = $(trEl);
@@ -42,9 +44,29 @@ export function parseJornada(html) {
     if (codActa) {
       partidos.push({ codActa, equipoLocal, equipoVisitante, fecha, hora, jugado });
     }
+
+    // La fila "Descansa" no es un partido
+    if (![equipoLocal, equipoVisitante].some(e => /^descansa$/i.test(e))) {
+      calendario.push({
+        equipoLocal,
+        equipoVisitante,
+        escudoLocal:     escudo(innerTable.find('.escudo_widgetL img').first()),
+        escudoVisitante: escudo(innerTable.find('.escudo_widgetV img').first()),
+        fecha,
+        hora,
+        jugado,
+      });
+    }
   });
 
-  return { jornada, partidos };
+  return { jornada, partidos, calendario };
+}
+
+// URL del escudo, o null si el club no tiene (la web pone una imagen genérica)
+function escudo(img) {
+  const src = img.attr('src')?.trim();
+  if (!src || src.includes('escudo_sm_resultados_')) return null;
+  return src;
 }
 
 export function parseActa(html, codActa) {
