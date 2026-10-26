@@ -14,6 +14,7 @@
 
 import { pool } from '../db/pool.js';
 import { avisarClausulazo } from './email.js';
+import { plantillaLlena, MENSAJE_PLANTILLA_LLENA } from './plantilla.js';
 
 export const CLAUSULA = {
   MULTIPLICADOR: 1.5,
@@ -150,6 +151,7 @@ export async function pagarClausula(idUsuario, idJugador) {
     if (saldoComprador < monto) {
       throw new ErrorClausula(`Saldo insuficiente: la cláusula cuesta ${monto.toLocaleString('es-ES')}€`);
     }
+    if (await plantillaLlena(comprador.id, client)) throw new ErrorClausula(MENSAJE_PLANTILLA_LLENA);
 
     const periodo = await periodoJornada(client);
     const { rows: [{ n: hechos }] } = await client.query(

@@ -3,6 +3,7 @@ import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 import { expirarOfertasVencidas } from './ofertas.js';
 import { guardarAlineacionesCerradas } from '../services/alineaciones.js';
 import { avisarSubastaGanada } from '../services/email.js';
+import { plantillaLlena, MENSAJE_PLANTILLA_LLENA } from '../services/plantilla.js';
 
 // Hora a la que cierran todas las subastas (hora española)
 const HORA_CIERRE = '19:00';
@@ -260,6 +261,9 @@ export async function mercadoRoutes(app) {
     if (subasta.id_vendedor === comprador.id) {
       return reply.code(400).send({ error: 'No puedes pujar en tu propia subasta' });
     }
+    if (await plantillaLlena(comprador.id)) {
+      return reply.code(400).send({ error: MENSAJE_PLANTILLA_LLENA });
+    }
 
     // Mínimo: el valor actual del jugador (o el precio mínimo de la subasta si es mayor)
     const pujaMinima = Number(subasta.puja_minima);
@@ -455,15 +459,23 @@ export async function resolverSubastasVencidas() {
         continue;
       }
 
-      // Mejor puja
-      const { rows: mejorPuja } = await client.query(
+      // Mejor puja de un equipo con hueco en la plantilla: quien llegó al máximo después de pujar
+      // (ganando otras subastas, por ejemplo) no puede quedárselo y pasa a la siguiente puja
+      const { rows: pujas } = await client.query(
         `SELECT id_equipo_fantasy, monto
          FROM pujas
          WHERE id_subasta = $1
-         ORDER BY monto DESC
-         LIMIT 1`,
+         ORDER BY monto DESC, creado_en`,
         [sub.id]
       );
+      const mejorPuja = [];
+      for (const p of pujas) {
+        await client.query(`SELECT id FROM equipos_fantasy WHERE id = $1 FOR UPDATE`, [p.id_equipo_fantasy]);
+        if (!(await plantillaLlena(p.id_equipo_fantasy, client))) {
+          mejorPuja.push(p);
+          break;
+        }
+      }
 
       // Subasta del sistema de un jugador que ya tiene dueño: anularla devolviendo las pujas
       const { rows: duenyo } = sub.tipo === 'SISTEMA'
@@ -482,7 +494,16 @@ export async function resolverSubastasVencidas() {
         await client.query(`UPDATE subastas SET estado = 'CANCELADA' WHERE id = $1`, [sub.id]);
         resultados.push({ id: sub.id, resultado: 'CANCELADA' });
       } else if (mejorPuja.length === 0) {
-        // Desierta: devolver el jugador al vendedor (ya lo tiene)
+        // Desierta (sin pujas o todos los pujadores con la plantilla llena): el jugador se queda
+        // con el vendedor (ya lo tiene) y se devuelven las pujas que hubiera
+        await client.query(
+          `UPDATE equipos_fantasy ef
+           SET saldo_disponible = ef.saldo_disponible + pu.monto,
+               saldo_bloqueado  = ef.saldo_bloqueado  - pu.monto
+           FROM pujas pu
+           WHERE pu.id_subasta = $1 AND pu.id_equipo_fantasy = ef.id`,
+          [sub.id]
+        );
         await client.query(
           `UPDATE subastas SET estado = 'DESIERTA' WHERE id = $1`, [sub.id]
         );

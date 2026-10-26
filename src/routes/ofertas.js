@@ -1,6 +1,7 @@
 import { pool } from '../db/pool.js';
 import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 import { guardarAlineacionesCerradas } from '../services/alineaciones.js';
+import { plantillaLlena, MENSAJE_PLANTILLA_LLENA, MAX_JUGADORES } from '../services/plantilla.js';
 
 /**
  * Marca como EXPIRADA las ofertas de usuario pendientes cuya fecha_expiracion ya pasó y devuelve
@@ -93,6 +94,9 @@ export async function ofertasRoutes(app) {
 
     if (comprador.saldo_disponible < monto) {
       return reply.code(400).send({ error: 'Saldo insuficiente para esta oferta' });
+    }
+    if (await plantillaLlena(comprador.id)) {
+      return reply.code(400).send({ error: MENSAJE_PLANTILLA_LLENA });
     }
 
     // Verificar que el jugador pertenece a OTRO equipo
@@ -253,6 +257,17 @@ export async function ofertasRoutes(app) {
       if (aceptada === 0) {
         await client.query('ROLLBACK');
         return reply.code(400).send({ error: 'Esta oferta ya no está pendiente' });
+      }
+
+      // El comprador puede haber llenado la plantilla después de hacer la oferta
+      if (oferta.tipo === 'USUARIO' && compradorId) {
+        await client.query(`SELECT id FROM equipos_fantasy WHERE id = $1 FOR UPDATE`, [compradorId]);
+        if (await plantillaLlena(compradorId, client)) {
+          await client.query('ROLLBACK');
+          return reply.code(400).send({
+            error: `El comprador ya tiene ${MAX_JUGADORES} jugadores y no puede fichar a ${oferta.jugador}. Rechaza la oferta.`,
+          });
+        }
       }
 
       // Pagar al vendedor
