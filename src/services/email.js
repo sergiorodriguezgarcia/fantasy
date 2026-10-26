@@ -1,5 +1,5 @@
 /**
- * Avisos por correo a los usuarios (subasta ganada, clausulazo recibido).
+ * Avisos por correo a los usuarios (subasta ganada, clausulazo recibido, recuperar contraseña).
  *
  * Se envían con la API HTTP de Brevo: Render free bloquea los puertos SMTP.
  * Variables de entorno:
@@ -100,6 +100,33 @@ export async function avisarSubastaGanada({ idEquipo, idJugador, monto }) {
   } catch (err) {
     console.error('[EMAIL] Error preparando aviso de subasta ganada:', err.message);
   }
+}
+
+// Enlace para elegir una contraseña nueva. Sin FRONTEND_URL el enlace no sirve de nada: no se envía
+export async function enviarRecuperacionPassword({ para, nombre, token, minutos }) {
+  if (!process.env.FRONTEND_URL) {
+    console.error('[EMAIL] Falta FRONTEND_URL: no se puede enviar el enlace de recuperación de contraseña');
+    return;
+  }
+  const ruta = `/restablecer?token=${token}`;
+  const url = `${process.env.FRONTEND_URL.replace(/\/$/, '')}${ruta}`;
+  await enviarCorreo({
+    para,
+    nombre,
+    asunto: 'Restablece tu contraseña de AsturFútbol Fantasy',
+    html: plantilla(
+      'Restablecer contraseña 🔑',
+      [
+        `Hola ${escapar(nombre)},`,
+        'Hemos recibido una petición para cambiar la contraseña de tu cuenta. Pulsa el botón para elegir una nueva.',
+        `El enlace caduca en ${minutos} minutos y solo se puede usar una vez.`,
+        `Si el botón no funciona, copia este enlace en el navegador:<br><span style="word-break:break-all;color:#4b5563">${escapar(url)}</span>`,
+        'Si no lo has pedido tú, ignora este correo: tu contraseña no cambia.',
+      ],
+      'Elegir nueva contraseña',
+      ruta
+    ),
+  });
 }
 
 export async function avisarClausulazo({ idVendedor, idComprador, idJugador, monto }) {

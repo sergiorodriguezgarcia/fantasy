@@ -1,6 +1,14 @@
+import { createHash, randomBytes } from 'crypto';
 import bcrypt from 'bcryptjs';
 import { pool } from '../db/pool.js';
 import { clausulaInicial, finProteccion } from '../services/clausulas.js';
+import { enviarRecuperacionPassword } from '../services/email.js';
+
+// Recuperar contraseña: caducidad del enlace y máximo de correos por usuario y hora
+const MINUTOS_ENLACE = 60;
+const MAX_ENLACES_HORA = 3;
+
+const hashToken = (token) => createHash('sha256').update(token).digest('hex');
 
 export async function authRoutes(app) {
 
@@ -125,6 +133,91 @@ export async function authRoutes(app) {
       token,
       usuario: { id: usuario.id, nombre: usuario.nombre, email: usuario.email, rol: usuario.rol },
     };
+  });
+
+  // POST /api/auth/recuperar — envía un enlace para restablecer la contraseña.
+  // Responde siempre lo mismo, exista o no el email, para no desvelar quién está registrado
+  app.post('/recuperar', async (req, reply) => {
+    const { email } = req.body ?? {};
+    if (!email) return reply.code(400).send({ error: 'email es obligatorio' });
+    const respuesta = {
+      ok: true,
+      mensaje: 'Si hay una cuenta con ese email, te hemos enviado un enlace para restablecer la contraseña.',
+    };
+
+    const { rows: [usuario] } = await pool.query(
+      `SELECT id, nombre, email FROM usuarios WHERE email = $1`, [email.toLowerCase().trim()]
+    );
+    if (!usuario) return respuesta;
+
+    // Límite de correos: evita usar el formulario para llenar el buzón de alguien
+    const { rows: [{ recientes }] } = await pool.query(
+      `SELECT COUNT(*)::int AS recientes FROM recuperaciones_password
+       WHERE id_usuario = $1 AND creado_en > NOW() - INTERVAL '1 hour'`,
+      [usuario.id]
+    );
+    if (recientes >= MAX_ENLACES_HORA) return respuesta;
+
+    // Solo vale el último enlace pedido
+    const token = randomBytes(32).toString('hex');
+    await pool.query(
+      `UPDATE recuperaciones_password SET usado = TRUE WHERE id_usuario = $1 AND NOT usado`, [usuario.id]
+    );
+    await pool.query(
+      `INSERT INTO recuperaciones_password (id_usuario, token_hash, expira_en)
+       VALUES ($1, $2, NOW() + make_interval(mins => $3))`,
+      [usuario.id, hashToken(token), MINUTOS_ENLACE]
+    );
+
+    // Sin await: la respuesta no espera a Brevo y tarda lo mismo exista o no la cuenta
+    // (enviarCorreo nunca lanza error)
+    enviarRecuperacionPassword({
+      para: usuario.email, nombre: usuario.nombre, token, minutos: MINUTOS_ENLACE,
+    });
+    return respuesta;
+  });
+
+  // POST /api/auth/restablecer — cambia la contraseña con el token del enlace y deja la sesión iniciada
+  app.post('/restablecer', async (req, reply) => {
+    const { token, password } = req.body ?? {};
+    if (!token || !password) {
+      return reply.code(400).send({ error: 'token y password son obligatorios' });
+    }
+    if (password.length < 6) {
+      return reply.code(400).send({ error: 'La contraseña debe tener al menos 6 caracteres' });
+    }
+
+    const hash = await bcrypt.hash(password, 10);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Marcar el enlace como usado en la misma consulta que lo valida: no se puede usar dos veces
+      const { rows: [enlace] } = await client.query(
+        `UPDATE recuperaciones_password SET usado = TRUE
+         WHERE token_hash = $1 AND NOT usado AND expira_en > NOW()
+         RETURNING id_usuario`,
+        [hashToken(String(token))]
+      );
+      if (!enlace) {
+        await client.query('ROLLBACK');
+        return reply.code(400).send({ error: 'El enlace no es válido o ha caducado. Pide uno nuevo.' });
+      }
+
+      const { rows: [usuario] } = await client.query(
+        `UPDATE usuarios SET password_hash = $1 WHERE id = $2 RETURNING id, nombre, email, rol`,
+        [hash, enlace.id_usuario]
+      );
+      await client.query('COMMIT');
+
+      const tokenSesion = app.jwt.sign({ id: usuario.id, email: usuario.email, rol: usuario.rol });
+      return { token: tokenSesion, usuario };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   });
 
   // GET /api/auth/me  (requiere token)

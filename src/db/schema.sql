@@ -277,6 +277,18 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- Enlaces para restablecer la contraseña (de un solo uso y con caducidad). Se guarda el SHA-256
+-- del token, no el token: quien lea la tabla no puede usar los enlaces
+CREATE TABLE IF NOT EXISTS recuperaciones_password (
+  id          SERIAL PRIMARY KEY,
+  id_usuario  INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  token_hash  CHAR(64) NOT NULL UNIQUE,
+  expira_en   TIMESTAMPTZ NOT NULL,
+  usado       BOOLEAN NOT NULL DEFAULT FALSE,
+  creado_en   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_recuperaciones_usuario ON recuperaciones_password(id_usuario, creado_en);
+
 -- ─── Índices útiles ──────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_jugadores_equipo ON jugadores(id_equipo_real);
 CREATE INDEX IF NOT EXISTS idx_estadisticas_jornada ON estadisticas(id_jornada);
