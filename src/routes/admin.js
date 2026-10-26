@@ -400,9 +400,9 @@ export async function adminRoutes(app) {
 
         // Importar jugadores de ambos equipos
         for (const equipoActa of [acta.equipoLocal, acta.equipoVisitante]) {
-          const pcero = equipoActa === acta.equipoLocal
-            ? golesVisitante === 0
-            : golesLocal === 0;
+          const victoria = equipoActa === acta.equipoLocal
+            ? golesLocal > golesVisitante
+            : golesVisitante > golesLocal;
 
           const jugadoresConStats = equipoActa.jugadores.filter(j => j.minutosJugados > 0);
 
@@ -412,9 +412,10 @@ export async function adminRoutes(app) {
             const golesPropio  = equipoActa.goles.filter(g => g.esPropio  && normNombre(g.jugadorNombre) === normNombre(j.nombre)).length;
             const amarillas    = equipoActa.tarjetas.filter(t => t.tipo === 'amarilla' && normNombre(t.jugadorNombre) === normNombre(j.nombre)).length;
             const rojas        = equipoActa.tarjetas.filter(t => t.tipo === 'roja'     && normNombre(t.jugadorNombre) === normNombre(j.nombre)).length;
-            // Portería a cero: solo si jugó 90 minutos completos
-            const porteriaCero = pcero && j.minutosJugados >= 90;
-            const golesEncajados = equipoActa === acta.equipoLocal ? golesVisitante : golesLocal;
+            // Portería a cero y encajados: solo lo que pasó con él en el campo (los minutos mínimos
+            // los exige calcularPuntos)
+            const golesEncajados = j.golesEncajados;
+            const porteriaCero = golesEncajados === 0;
 
             // Buscar jugador usando el índice pre-cargado
             const idJugador = buscarJugador(j.nombre, j.id);
@@ -427,8 +428,8 @@ export async function adminRoutes(app) {
             await client.query(
               `INSERT INTO estadisticas
                  (id_jugador, id_jornada, id_partido, minutos_jugados, goles, goles_propio,
-                  amarillas, rojas, porteria_cero, goles_encajados)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                  amarillas, rojas, porteria_cero, goles_encajados, victoria)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                ON CONFLICT (id_jugador, id_jornada) DO UPDATE
                  SET minutos_jugados = EXCLUDED.minutos_jugados,
                      goles           = EXCLUDED.goles,
@@ -437,9 +438,10 @@ export async function adminRoutes(app) {
                      rojas           = EXCLUDED.rojas,
                      porteria_cero   = EXCLUDED.porteria_cero,
                      goles_encajados = EXCLUDED.goles_encajados,
+                     victoria        = EXCLUDED.victoria,
                      id_partido      = EXCLUDED.id_partido`,
               [idJugador, idJornada, idPartido, j.minutosJugados,
-               goles, golesPropio, amarillas, rojas, porteriaCero, golesEncajados]
+               goles, golesPropio, amarillas, rojas, porteriaCero, golesEncajados, victoria]
             );
           }
         }
@@ -621,21 +623,21 @@ export async function adminRoutes(app) {
         }
         if (!idJugador) continue;
 
-        // Calcular portería a cero y goles encajados según nombre de equipo del jugador
-        const [pcero, golesEnc] = await Promise.all([
-          determinarPorteriaCero(client, idJugador, nombre_local, nombre_visitante, goles_local, goles_visitante),
-          determinarGolesEncajados(client, idJugador, nombre_local, nombre_visitante, goles_local, goles_visitante),
-        ]);
+        // Portería a cero, goles encajados y victoria según el equipo del jugador. Sin los minutos de
+        // los goles se toma el marcador de todo el partido
+        const { porteriaCero, golesEncajados, victoria } = await resultadoDelJugador(
+          client, idJugador, nombre_local, nombre_visitante, goles_local, goles_visitante
+        );
 
         const { rows: eRow } = await client.query(
           `INSERT INTO estadisticas
              (id_jugador, id_jornada, id_partido, minutos_jugados, goles, goles_propio,
-              amarillas, rojas, porteria_cero, goles_encajados)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+              amarillas, rojas, porteria_cero, goles_encajados, victoria)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            RETURNING id`,
           [idJugador, id_jornada, idPartido,
            j.minutos_jugados ?? 0, j.goles ?? 0, j.goles_propio ?? 0,
-           j.amarillas ?? 0, j.rojas ?? 0, pcero, golesEnc]
+           j.amarillas ?? 0, j.rojas ?? 0, porteriaCero, golesEncajados, victoria]
         );
         statRows.push(eRow[0].id);
       }
@@ -662,7 +664,7 @@ export async function adminRoutes(app) {
     const { rows: stats } = await pool.query(
       `SELECT e.id_jugador, j.nombre, j.posicion, er.nombre AS equipo_real,
               e.minutos_jugados, e.goles, e.goles_propio,
-              e.amarillas, e.rojas, e.porteria_cero, e.goles_encajados
+              e.amarillas, e.rojas, e.porteria_cero, e.goles_encajados, e.victoria
        FROM estadisticas e
        JOIN jugadores j ON j.id = e.id_jugador
        JOIN equipos_reales er ON er.id = j.id_equipo_real
@@ -683,6 +685,7 @@ export async function adminRoutes(app) {
       rojas:           s.rojas,
       porteria_cero:   s.porteria_cero,
       goles_encajados: s.goles_encajados,
+      victoria:        s.victoria,
       puntos:          calcularPuntos(s.posicion, s),
     }));
 
@@ -790,9 +793,10 @@ function convertirNombreScraper(nombre) {
   return nombre.trim();
 }
 
-// ─── Helper: determinar portería a cero de un jugador ────────────────────────
-async function determinarPorteriaCero(client, idJugador, nombreLocal, nombreVisitante, golesLocal, golesVisitante) {
-  if (golesLocal === null || golesVisitante === null) return false;
+// ─── Helper: portería a cero, goles encajados y victoria del equipo de un jugador ──
+async function resultadoDelJugador(client, idJugador, nombreLocal, nombreVisitante, golesLocal, golesVisitante) {
+  const sinDatos = { porteriaCero: false, golesEncajados: 0, victoria: false };
+  if (golesLocal == null || golesVisitante == null) return sinDatos;
 
   const { rows } = await client.query(
     `SELECT er.nombre AS equipo
@@ -801,43 +805,19 @@ async function determinarPorteriaCero(client, idJugador, nombreLocal, nombreVisi
      WHERE j.id = $1`,
     [idJugador]
   );
-  if (rows.length === 0) return false;
+  if (rows.length === 0) return sinDatos;
 
   const nombreEquipo = (rows[0].equipo ?? '').toUpperCase();
   const local = nombreLocal.toUpperCase();
   const visitante = nombreVisitante.toUpperCase();
 
+  let favor, contra;
   if (nombreEquipo.includes(local) || local.includes(nombreEquipo)) {
-    return golesVisitante === 0;
+    [favor, contra] = [golesLocal, golesVisitante];
+  } else if (nombreEquipo.includes(visitante) || visitante.includes(nombreEquipo)) {
+    [favor, contra] = [golesVisitante, golesLocal];
+  } else {
+    return sinDatos;
   }
-  if (nombreEquipo.includes(visitante) || visitante.includes(nombreEquipo)) {
-    return golesLocal === 0;
-  }
-  return false;
-}
-
-// ─── Helper: goles encajados por el equipo de un jugador ─────────────────────
-async function determinarGolesEncajados(client, idJugador, nombreLocal, nombreVisitante, golesLocal, golesVisitante) {
-  if (golesLocal === null || golesVisitante === null) return 0;
-
-  const { rows } = await client.query(
-    `SELECT er.nombre AS equipo
-     FROM jugadores j
-     LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
-     WHERE j.id = $1`,
-    [idJugador]
-  );
-  if (rows.length === 0) return 0;
-
-  const nombreEquipo = (rows[0].equipo ?? '').toUpperCase();
-  const local = nombreLocal.toUpperCase();
-  const visitante = nombreVisitante.toUpperCase();
-
-  if (nombreEquipo.includes(local) || local.includes(nombreEquipo)) {
-    return golesVisitante ?? 0;
-  }
-  if (nombreEquipo.includes(visitante) || visitante.includes(nombreEquipo)) {
-    return golesLocal ?? 0;
-  }
-  return 0;
+  return { porteriaCero: contra === 0, golesEncajados: contra, victoria: favor > contra };
 }

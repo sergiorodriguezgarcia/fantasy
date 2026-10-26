@@ -134,6 +134,17 @@ export function parseActa(html, codActa) {
   }
 
   const [equipoLocal, equipoVisitante] = equiposData;
+  if (equipoLocal && equipoVisitante) {
+    calcularEncajados(equipoLocal, equipoVisitante);
+    calcularEncajados(equipoVisitante, equipoLocal);
+  }
+  for (const eq of equiposData) {
+    for (const j of eq.jugadores) {
+      delete j.entrada;
+      delete j.salida;
+    }
+  }
+
   return { codActa, jornada, fecha, equipoLocal: equipoLocal ?? null, equipoVisitante: equipoVisitante ?? null };
 }
 
@@ -161,9 +172,10 @@ function parseTarjetas($, table) {
     const imgSrc = tds.eq(0).find('img').attr('src') ?? '';
     const tipo   = imgSrc.includes('tarj_roja') ? 'roja' : 'amarilla';
     const texto  = stripTags(tds.eq(1).html() ?? '');
-    const minMatch = texto.match(/\((\d+)[''`']\)/);
+    // El minuto va entre paréntesis delante del nombre: "(83')" o, en el descuento, "(45'+2)"
+    const minMatch = texto.match(/\((\d+)[^)]*\)/);
     const minuto = minMatch ? parseInt(minMatch[1]) : null;
-    const jugadorNombre = texto.replace(/\(\d+[''`']\)/, '').trim();
+    const jugadorNombre = texto.replace(/\(\d+[^)]*\)/, '').trim();
     if (jugadorNombre) tarjetas.push({ jugadorNombre, minuto, tipo });
   });
   return tarjetas;
@@ -213,7 +225,8 @@ function parseSustituciones($, table) {
 }
 
 // Minutos = salida - entrada. Los titulares entran en el 0 y los suplentes solo si hay sustitución;
-// una roja corta la participación en el minuto de la tarjeta.
+// una roja (o la segunda amarilla) corta la participación en el minuto de la tarjeta.
+// Deja entrada/salida en cada jugador para calcularEncajados(); parseActa() las borra después.
 function calcularMinutos(equipo) {
   for (const j of equipo.jugadores) {
     j.entrada = j.esTitular ? 0 : null;
@@ -226,15 +239,31 @@ function calcularMinutos(equipo) {
     if (sale)  sale.salida  = min;
     if (entra) entra.entrada = min;
   }
-  for (const t of equipo.tarjetas) {
-    if (t.tipo !== 'roja' || t.minuto === null) continue;
-    const j = equipo.jugadores.find((x) => normEq(x.nombre, t.jugadorNombre));
-    if (j) j.salida = Math.min(j.salida, t.minuto);
+  for (const j of equipo.jugadores) {
+    const suyas = equipo.tarjetas.filter((t) => t.minuto !== null && normEq(j.nombre, t.jugadorNombre));
+    const rojas = suyas.filter((t) => t.tipo === 'roja').map((t) => t.minuto);
+    // El acta no marca la doble amarilla con una roja: la segunda amarilla es la expulsión
+    const amarillas = suyas.filter((t) => t.tipo === 'amarilla').map((t) => t.minuto).sort((a, b) => a - b);
+    const expulsiones = amarillas.length >= 2 ? [...rojas, amarillas[1]] : rojas;
+    if (expulsiones.length) j.salida = Math.min(j.salida, ...expulsiones);
   }
   for (const j of equipo.jugadores) {
     j.minutosJugados = j.entrada === null ? 0 : Math.max(0, j.salida - j.entrada);
-    delete j.entrada;
-    delete j.salida;
+  }
+}
+
+// Goles que encajó el equipo con cada jugador en el campo (los del rival y los propios del equipo).
+// Un gol en el minuto de un cambio cuenta para el que entra; quien acaba el partido se lleva
+// también los del descuento (el acta los da como 90'+x).
+function calcularEncajados(equipo, rival) {
+  const minutosEncajados = [
+    ...rival.goles.filter((g) => !g.esPropio),
+    ...equipo.goles.filter((g) => g.esPropio),
+  ].map((g) => g.minuto);
+  for (const j of equipo.jugadores) {
+    j.golesEncajados = j.entrada === null
+      ? 0
+      : minutosEncajados.filter((m) => m >= j.entrada && (m < j.salida || j.salida >= 90)).length;
   }
 }
 

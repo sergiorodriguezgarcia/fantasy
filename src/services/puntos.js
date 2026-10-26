@@ -3,18 +3,21 @@
  *
  * Tabla de puntos por posición (configurable):
  *
- * | Acción                        | POR | DEF | MED | DEL |
- * |-------------------------------|-----|-----|-----|-----|
- * | Gol marcado                   |  6  |  6  |  5  |  4  |
- * | Portería a cero (≥90 min)     |  4  |  3  |  1  |  0  |
- * | Gol en propia puerta          | -2  | -2  | -2  | -2  |
- * | Gol encajado                  | -1  | -1  | -1  | -1  |
- * |   POR/DEF: cada gol           |     |     | MED/DEL: cada 2 |
- * | Tarjeta amarilla              | -1  | -1  | -1  | -1  |
- * | Tarjeta roja                  | -3  | -3  | -3  | -3  |
- * | Jugar ≥60 min                 |  2  |  2  |  2  |  2  |
- * | Jugar <60 min                 |  1  |  1  |  1  |  1  |
- * | Capitán (multiplicador)       | ×2  | ×2  | ×2  | ×2  |
+ * | Acción                             | POR | DEF | MED | DEL |
+ * |------------------------------------|-----|-----|-----|-----|
+ * | Gol marcado                        |  6  |  6  |  5  |  4  |
+ * | Portería a cero (≥60 min)          |  4  |  3  |  1  |  0  |
+ * | Gol en propia puerta               | -2  | -2  | -2  | -2  |
+ * | Goles encajados (con él en campo)  | -1 por gol  | -1 cada 2   |
+ * | Victoria del equipo (si jugó)      |  1  |  1  |  1  |  1  |
+ * | Tarjeta amarilla                   | -1  | -1  | -1  | -1  |
+ * | Tarjeta roja / doble amarilla      | -3  | -3  | -3  | -3  |
+ * | Jugar ≥60 min                      |  2  |  2  |  2  |  2  |
+ * | Jugar <60 min                      |  1  |  1  |  1  |  1  |
+ * | Capitán (multiplicador, en equipo) | ×2  | ×2  | ×2  | ×2  |
+ *
+ * Portería a cero y goles encajados cuentan solo lo que pasó con el jugador en el campo.
+ * Una doble amarilla es una expulsión: -3 en total, no -1 por cada amarilla.
  *
  * Premio: cada equipo cobra puntos_jornada × 100.000€ al calcularse la jornada.
  */
@@ -25,43 +28,79 @@ import { guardarAlineacionesCerradas, aplicarSustituciones } from './alineacione
 // Premio en dinero por cada punto conseguido en una jornada (21 puntos → 2.100.000€)
 export const PREMIO_POR_PUNTO = 100_000;
 
+// Minutos mínimos en el campo para cobrar la portería a cero
+const MINUTOS_PORTERIA_CERO = 60;
+
 const PUNTOS = {
-  // penalizacionEncajado: puntos negativos por cada N goles encajados
-  // POR y DEF: -1 por gol encajado (DEF se aplica cada 2, ver lógica abajo)
-  POR: { gol: 6, porteriaCero: 4, golPropio: -2, penalizacionEncajado: -1, cadaXEncajados: 1, amarilla: -1, roja: -3, jugar60: 2, jugarMenos60: 1 },
-  DEF: { gol: 6, porteriaCero: 3, golPropio: -2, penalizacionEncajado: -1, cadaXEncajados: 1, amarilla: -1, roja: -3, jugar60: 2, jugarMenos60: 1 },
-  MED: { gol: 5, porteriaCero: 1, golPropio: -2, penalizacionEncajado: -1, cadaXEncajados: 2, amarilla: -1, roja: -3, jugar60: 2, jugarMenos60: 1 },
-  DEL: { gol: 4, porteriaCero: 0, golPropio: -2, penalizacionEncajado: -1, cadaXEncajados: 2, amarilla: -1, roja: -3, jugar60: 2, jugarMenos60: 1 },
+  // penalizacionEncajado: puntos negativos por cada `cadaXEncajados` goles encajados
+  POR: { gol: 6, porteriaCero: 4, golPropio: -2, penalizacionEncajado: -1, cadaXEncajados: 1, amarilla: -1, roja: -3, jugar60: 2, jugarMenos60: 1, victoria: 1 },
+  DEF: { gol: 6, porteriaCero: 3, golPropio: -2, penalizacionEncajado: -1, cadaXEncajados: 1, amarilla: -1, roja: -3, jugar60: 2, jugarMenos60: 1, victoria: 1 },
+  MED: { gol: 5, porteriaCero: 1, golPropio: -2, penalizacionEncajado: -1, cadaXEncajados: 2, amarilla: -1, roja: -3, jugar60: 2, jugarMenos60: 1, victoria: 1 },
+  DEL: { gol: 4, porteriaCero: 0, golPropio: -2, penalizacionEncajado: -1, cadaXEncajados: 2, amarilla: -1, roja: -3, jugar60: 2, jugarMenos60: 1, victoria: 1 },
 };
+
+const plural = (n, singular, pluralTxt = `${singular}s`) => `${n} ${n === 1 ? singular : pluralTxt}`;
+
+/**
+ * Desglose de los puntos de un jugador en una jornada: [{ concepto, puntos }] y el total.
+ * Las líneas con 0 puntos son informativas (p. ej. portería a cero sin llegar a 60 min).
+ * Es la única fuente de las reglas: el frontend pinta este desglose tal cual.
+ */
+export function desglosarPuntos(posicion, stats) {
+  const tabla = PUNTOS[posicion] ?? PUNTOS.DEL;
+  const minutos = stats.minutos_jugados ?? 0;
+  const lineas = [];
+  const linea = (concepto, puntos) => lineas.push({ concepto, puntos });
+
+  if (minutos >= 60) {
+    linea('≥60 min jugados', tabla.jugar60);
+  } else if (minutos > 0) {
+    linea(`${minutos} min jugados`, tabla.jugarMenos60);
+  }
+
+  const goles = stats.goles ?? 0;
+  if (goles > 0) linea(`${plural(goles, 'gol', 'goles')} (×${tabla.gol})`, goles * tabla.gol);
+
+  const golesPropio = stats.goles_propio ?? 0;
+  if (golesPropio > 0) linea(`${plural(golesPropio, 'gol', 'goles')} en propia puerta`, golesPropio * tabla.golPropio);
+
+  if (stats.victoria && minutos > 0) linea('Victoria del equipo', tabla.victoria);
+
+  if (stats.porteria_cero && tabla.porteriaCero > 0) {
+    if (minutos >= MINUTOS_PORTERIA_CERO) {
+      linea('Portería a cero', tabla.porteriaCero);
+    } else {
+      linea(`Portería a cero (no llegó a ${MINUTOS_PORTERIA_CERO} min)`, 0);
+    }
+  }
+
+  const encajados = stats.goles_encajados ?? 0;
+  if (encajados > 0) {
+    const regla = tabla.cadaXEncajados > 1 ? ` (${tabla.penalizacionEncajado} cada ${tabla.cadaXEncajados})` : '';
+    linea(
+      `${plural(encajados, 'gol encajado', 'goles encajados')}${regla}`,
+      Math.floor(encajados / tabla.cadaXEncajados) * tabla.penalizacionEncajado,
+    );
+  }
+
+  const amarillas = stats.amarillas ?? 0;
+  const rojas = stats.rojas ?? 0;
+  if (amarillas >= 2) {
+    // La segunda amarilla es la expulsión: cuenta como una roja (y una roja apuntada a la vez es la misma)
+    linea('Doble amarilla (expulsión)', tabla.roja);
+  } else {
+    if (amarillas > 0) linea('Tarjeta amarilla', amarillas * tabla.amarilla);
+    if (rojas > 0) linea(plural(rojas, 'tarjeta roja', 'tarjetas rojas'), rojas * tabla.roja);
+  }
+
+  return { lineas, total: lineas.reduce((s, l) => s + l.puntos, 0) };
+}
 
 /**
  * Calcula los puntos de un jugador según sus estadísticas y posición.
  */
 export function calcularPuntos(posicion, stats) {
-  const tabla = PUNTOS[posicion] ?? PUNTOS.DEL;
-  let puntos = 0;
-
-  if (stats.minutos_jugados >= 60) {
-    puntos += tabla.jugar60;
-  } else if (stats.minutos_jugados > 0) {
-    puntos += tabla.jugarMenos60;
-  }
-
-  puntos += (stats.goles ?? 0) * tabla.gol;
-  puntos += (stats.goles_propio ?? 0) * tabla.golPropio;
-  puntos += (stats.amarillas ?? 0) * tabla.amarilla;
-  puntos += (stats.rojas ?? 0) * tabla.roja;
-
-  if (stats.porteria_cero && stats.minutos_jugados >= 90) {
-    puntos += tabla.porteriaCero;
-  }
-
-  // Penalización por goles encajados (solo POR y DEF)
-  if (tabla.penalizacionEncajado < 0 && (stats.goles_encajados ?? 0) > 0) {
-    puntos += Math.floor((stats.goles_encajados) / tabla.cadaXEncajados) * tabla.penalizacionEncajado;
-  }
-
-  return puntos;
+  return desglosarPuntos(posicion, stats).total;
 }
 
 /**
@@ -86,7 +125,7 @@ export async function calcularPuntosJornada(idJornada) {
     // 1. Calcular puntos por estadística individual
     const { rows: stats } = await client.query(
       `SELECT e.id, e.minutos_jugados, e.goles, e.goles_propio,
-              e.amarillas, e.rojas, e.porteria_cero, e.goles_encajados,
+              e.amarillas, e.rojas, e.porteria_cero, e.goles_encajados, e.victoria,
               j.posicion
        FROM estadisticas e
        JOIN jugadores j ON j.id = e.id_jugador

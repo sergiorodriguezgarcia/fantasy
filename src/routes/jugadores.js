@@ -1,5 +1,6 @@
 import { pool } from '../db/pool.js';
 import { clausulazosRestantes } from '../services/clausulas.js';
+import { desglosarPuntos } from '../services/puntos.js';
 
 export async function jugadoresRoutes(app) {
 
@@ -99,6 +100,7 @@ export async function jugadoresRoutes(app) {
                   'rojas', e.rojas,
                   'porteria_cero', e.porteria_cero,
                   'goles_encajados', e.goles_encajados,
+                  'victoria', e.victoria,
                   'es_capitan', e.es_capitan,
                   'puntos', e.puntos,
                   'partido', CASE WHEN pt.id IS NOT NULL
@@ -119,6 +121,16 @@ export async function jugadoresRoutes(app) {
 
     if (rows.length === 0) return reply.code(404).send({ error: 'Jugador no encontrado' });
     const jugador = rows[0];
+
+    // Desglose de puntos de cada jornada con las reglas del motor de puntos. Si la jornada se calculó
+    // con otras reglas (o se ajustó a mano), la diferencia sale como una línea más para que cuadre
+    for (const e of jugador.estadisticas ?? []) {
+      const { lineas, total } = desglosarPuntos(jugador.posicion, { ...e, minutos_jugados: e.minutos });
+      if (e.puntos != null && e.puntos !== total) {
+        lineas.push({ concepto: 'Otros ajustes', puntos: e.puntos - total });
+      }
+      e.desglose = lineas;
+    }
 
     // La ruta es pública; si viene con token se indica si el jugador es suyo y cuántos clausulazos le quedan
     try {

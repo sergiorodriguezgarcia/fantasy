@@ -349,11 +349,10 @@ async function importarPartido(idJornada, partido) {
     );
 
     // Insertar estadísticas de ambos equipos
-    for (const [equipoData, golesContra] of [
-      [acta.equipoLocal,     golesVisitante],
-      [acta.equipoVisitante, golesLocal],
+    for (const [equipoData, victoria] of [
+      [acta.equipoLocal,     golesLocal > golesVisitante],
+      [acta.equipoVisitante, golesVisitante > golesLocal],
     ]) {
-      const porteriaCero = golesContra === 0;
 
       for (const j of equipoData.jugadores) {
         if (j.minutosJugados === 0) continue;
@@ -396,11 +395,13 @@ async function importarPartido(idJornada, partido) {
           t => t.tipo === 'roja' && normalizeName(t.jugadorNombre) === normalizeName(j.nombre)
         ).length;
 
+        // Portería a cero y encajados: solo lo que pasó con él en el campo (los minutos mínimos los
+        // exige calcularPuntos)
         await client.query(
           `INSERT INTO estadisticas
              (id_jugador, id_jornada, id_partido, minutos_jugados, goles, goles_propio,
-              amarillas, rojas, porteria_cero, goles_encajados)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+              amarillas, rojas, porteria_cero, goles_encajados, victoria)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            ON CONFLICT (id_jugador, id_jornada) DO UPDATE
              SET minutos_jugados = EXCLUDED.minutos_jugados,
                  goles           = EXCLUDED.goles,
@@ -408,12 +409,14 @@ async function importarPartido(idJornada, partido) {
                  amarillas       = EXCLUDED.amarillas,
                  rojas           = EXCLUDED.rojas,
                  porteria_cero   = EXCLUDED.porteria_cero,
-                 goles_encajados = EXCLUDED.goles_encajados`,
+                 goles_encajados = EXCLUDED.goles_encajados,
+                 victoria        = EXCLUDED.victoria`,
           [idJugador, idJornada, idPartido,
            j.minutosJugados, goles, golesPropio,
            amarillas, rojas,
-           porteriaCero && j.minutosJugados >= 90,
-           golesContra]
+           j.golesEncajados === 0,
+           j.golesEncajados,
+           victoria]
         );
       }
     }

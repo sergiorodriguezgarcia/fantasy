@@ -241,6 +241,8 @@ CREATE INDEX IF NOT EXISTS idx_ofertas_jugador  ON ofertas(id_jugador, estado);
 
 -- ─── Migraciones compatibles (columnas añadidas tras creación inicial) ───────
 ALTER TABLE estadisticas ADD COLUMN IF NOT EXISTS goles_encajados INTEGER NOT NULL DEFAULT 0;
+-- TRUE si el equipo real del jugador ganó el partido (+1 punto si jugó)
+ALTER TABLE estadisticas ADD COLUMN IF NOT EXISTS victoria BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE jugadores ADD COLUMN IF NOT EXISTS foto      BYTEA;        -- foto extraída del acta (base64 decodificado)
 ALTER TABLE jugadores ADD COLUMN IF NOT EXISTS foto_mime VARCHAR(30);
 ALTER TABLE ofertas ADD COLUMN IF NOT EXISTS fecha_respuesta TIMESTAMPTZ;  -- cuándo se aceptó (histórico de fichajes)
