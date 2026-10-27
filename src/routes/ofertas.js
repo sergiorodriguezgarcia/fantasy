@@ -293,10 +293,12 @@ export async function ofertasRoutes(app) {
       // Añadir al comprador (solo oferta de usuario)
       if (oferta.tipo === 'USUARIO' && compradorId) {
         const fechaFichaje = new Date();
+        // Entra como suplente para no descuadrar la alineación guardada del comprador
         await client.query(
           `INSERT INTO plantillas
-             (id_equipo_fantasy, id_jugador, precio_compra, clausula_monto, clausula_activa_desde, fecha_fichaje)
-           VALUES ($1, $2, $3, $4, $5, $6)
+             (id_equipo_fantasy, id_jugador, es_titular, es_capitan, precio_compra, clausula_monto,
+              clausula_activa_desde, fecha_fichaje)
+           VALUES ($1, $2, FALSE, FALSE, $3, $4, $5, $6)
            ON CONFLICT (id_equipo_fantasy, id_jugador) DO UPDATE
              SET precio_compra = EXCLUDED.precio_compra,
                  clausula_monto = EXCLUDED.clausula_monto,
