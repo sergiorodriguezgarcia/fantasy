@@ -161,16 +161,23 @@ export async function alineacionJornada(idEquipo, idJornada, db = pool) {
  * Inicio del primer partido a partir de los horarios de asturfutbol.es ("18-10-2026" y "12:00",
  * hora de España). Devuelve "2026-10-18 12:00" (sin zona: se interpreta en Europe/Madrid en SQL)
  * o null si ningún partido tiene fecha.
+ * Un partido con fecha pero aún sin hora solo cuenta (desde las 00:00) si es de un día anterior
+ * al primer partido con hora: así un horario pendiente no adelanta el cierre a medianoche, pero
+ * tampoco se salta un día entero de partidos.
  */
 export function primerPartido(partidos) {
-  const inicios = partidos
+  const conFecha = partidos
     .map(p => {
       const f = (p.fecha ?? '').match(/(\d{2})-(\d{2})-(\d{4})/);
       if (!f) return null;
       const h = (p.hora ?? '').match(/(\d{1,2}):(\d{2})/);
-      return `${f[3]}-${f[2]}-${f[1]} ${h ? `${h[1].padStart(2, '0')}:${h[2]}` : '00:00'}`;
+      return { dia: `${f[3]}-${f[2]}-${f[1]}`, hora: h ? `${h[1].padStart(2, '0')}:${h[2]}` : null };
     })
-    .filter(Boolean)
-    .sort();
-  return inicios[0] ?? null;
+    .filter(Boolean);
+
+  const conHora = conFecha.filter(p => p.hora).map(p => `${p.dia} ${p.hora}`).sort();
+  const sinHora = conFecha.filter(p => !p.hora).map(p => `${p.dia} 00:00`).sort();
+  const primero = conHora[0] ?? null;
+  if (sinHora[0] && (!primero || sinHora[0].slice(0, 10) < primero.slice(0, 10))) return sinHora[0];
+  return primero;
 }

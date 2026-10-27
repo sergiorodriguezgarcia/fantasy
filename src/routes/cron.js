@@ -155,10 +155,10 @@ export async function importarJornadaAutomatica() {
     const jugados = partidos.filter(p => p.jugado);
 
     // Crear la jornada en cuanto se publica su calendario (aunque aún no haya previos), con el
-    // cierre de alineaciones en el inicio del primer partido con previo (sin previos aún no hay
-    // cierre: muchas veces tampoco hay horas y el cierre caería a las 00:00). El cierre se actualiza
-    // si cambian los horarios, salvo que ya se haya guardado la foto de las alineaciones. El
-    // calendario se refresca siempre para mostrar los horarios al día.
+    // cierre de alineaciones en el inicio del primer partido del calendario, tenga o no previo (un
+    // partido del sábado sin previo publicado también cierra). El cierre se actualiza si cambian
+    // los horarios, salvo que ya se haya guardado la foto de las alineaciones. El calendario se
+    // refresca siempre para mostrar los horarios al día.
     const { rows: [{ id: idJornada, cierre_alineaciones: cierre }] } = await pool.query(
       `INSERT INTO jornadas (numero, estado, cierre_alineaciones, calendario)
        VALUES ($1, $2, $3::timestamp AT TIME ZONE 'Europe/Madrid', $4::jsonb)
@@ -168,7 +168,7 @@ export async function importarJornadaAutomatica() {
                                         ELSE COALESCE(EXCLUDED.cierre_alineaciones, jornadas.cierre_alineaciones) END,
              calendario = EXCLUDED.calendario
        RETURNING id, cierre_alineaciones`,
-      [numJornada, jugados.length > 0 ? 'EN_CURSO' : 'PENDIENTE', primerPartido(partidos),
+      [numJornada, jugados.length > 0 ? 'EN_CURSO' : 'PENDIENTE', primerPartido(calendario),
        JSON.stringify(calendarioJornada(calendario))]
     );
 
