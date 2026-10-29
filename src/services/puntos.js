@@ -23,7 +23,7 @@
  */
 
 import { pool } from '../db/pool.js';
-import { guardarAlineacionesCerradas, aplicarSustituciones } from './alineaciones.js';
+import { guardarAlineacionesCerradas, aplicarSustituciones, alineacionValida } from './alineaciones.js';
 
 // Premio en dinero por cada punto conseguido en una jornada (21 puntos → 2.100.000€)
 export const PREMIO_POR_PUNTO = 100_000;
@@ -195,9 +195,22 @@ export async function calcularPuntosJornada(idJornada) {
     };
 
     for (const equipo of equipos) {
-      // No puntúa si no tenía alineación guardada (al cierre, si hay foto) o tiene saldo negativo
+      // Mismo orden que alineacionJornada(): las sustituciones (y lo que se ve en el campo) coinciden
+      const { rows: plantilla } = await client.query(
+        `SELECT p.id_jugador, p.es_titular, p.es_capitan, j.posicion,
+                e.puntos, e.minutos_jugados
+         FROM ${conFoto ? 'alineaciones_jornada' : 'plantillas'} p
+         JOIN jugadores j ON j.id = p.id_jugador
+         LEFT JOIN estadisticas e ON e.id_jugador = j.id AND e.id_jornada = $2
+         WHERE p.id_equipo_fantasy = $1 ${conFoto ? 'AND p.id_jornada = $2' : ''}
+         ORDER BY j.posicion, j.nombre`,
+        [equipo.id, idJornada]
+      );
+
+      // No puntúa si no tenía alineación guardada (al cierre, si hay foto), si al cierre ya no
+      // estaba completa (11 titulares en una formación válida con capitán) o tiene saldo negativo
       const sinAlineacion = conFoto ? !alineadosAlCierre.has(equipo.id) : !equipo.formacion;
-      if (sinAlineacion || equipo.saldo_disponible < 0) {
+      if (sinAlineacion || !alineacionValida(plantilla) || equipo.saldo_disponible < 0) {
         await client.query(
           `INSERT INTO puntuaciones_jornada
              (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla, premio)
@@ -213,18 +226,6 @@ export async function calcularPuntosJornada(idJornada) {
         );
         continue;
       }
-
-      // Mismo orden que alineacionJornada(): las sustituciones (y lo que se ve en el campo) coinciden
-      const { rows: plantilla } = await client.query(
-        `SELECT p.id_jugador, p.es_titular, p.es_capitan, j.posicion,
-                e.puntos, e.minutos_jugados
-         FROM ${conFoto ? 'alineaciones_jornada' : 'plantillas'} p
-         JOIN jugadores j ON j.id = p.id_jugador
-         LEFT JOIN estadisticas e ON e.id_jugador = j.id AND e.id_jornada = $2
-         WHERE p.id_equipo_fantasy = $1 ${conFoto ? 'AND p.id_jornada = $2' : ''}
-         ORDER BY j.posicion, j.nombre`,
-        [equipo.id, idJornada]
-      );
 
       // Titulares con sustitución automática (cada suplente solo una vez) y capitán ×2
       const { total: puntosTotales } = aplicarSustituciones(plantilla);

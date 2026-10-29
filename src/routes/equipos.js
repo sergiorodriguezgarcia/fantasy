@@ -4,6 +4,7 @@ import {
 } from '../services/clausulas.js';
 import {
   guardarAlineacionesCerradas, jornadaConAlineacionesCerradas, proximoCierreAlineaciones, alineacionJornada,
+  FORMACIONES, alineacionValida,
 } from '../services/alineaciones.js';
 
 export async function equiposRoutes(app) {
@@ -41,7 +42,10 @@ export async function equiposRoutes(app) {
       ? { cerrada: true, jornada: cerrada.numero, cierre: cerrada.cierre_alineaciones }
       : { cerrada: false, jornada: proxima?.numero ?? null, cierre: proxima?.cierre_alineaciones ?? null };
 
-    return { ...ef, jugadores, alineaciones, clausulazos_restantes: await clausulazosRestantes(ef.id) };
+    // Alineación guardada que aún puede puntuar (deja de valer si sale un titular de la plantilla)
+    const alineacion_valida = !!ef.formacion && alineacionValida(jugadores);
+
+    return { ...ef, jugadores, alineaciones, alineacion_valida, clausulazos_restantes: await clausulazosRestantes(ef.id) };
   });
 
   // POST /api/equipos/mi-equipo/vender — vender un jugador al instante por su precio actual
@@ -124,13 +128,6 @@ export async function equiposRoutes(app) {
         error: `Las alineaciones están cerradas: la jornada ${cerrada.numero} ya ha empezado. Podrás cambiarla cuando se calcule.`,
       });
     }
-
-    const FORMACIONES = {
-      '4-3-3': { DEF: 4, MED: 3, DEL: 3 },
-      '4-4-2': { DEF: 4, MED: 4, DEL: 2 },
-      '3-5-2': { DEF: 3, MED: 5, DEL: 2 },
-      '3-4-3': { DEF: 3, MED: 4, DEL: 3 },
-    };
 
     if (!FORMACIONES[formacion]) {
       return reply.code(400).send({ error: `Formación inválida. Permitidas: ${Object.keys(FORMACIONES).join(', ')}` });

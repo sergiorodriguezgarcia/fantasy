@@ -9,6 +9,29 @@
 
 import { pool } from '../db/pool.js';
 
+// Titulares de campo por formación (más 1 portero)
+export const FORMACIONES = {
+  '4-3-3': { DEF: 4, MED: 3, DEL: 3 },
+  '4-4-2': { DEF: 4, MED: 4, DEL: 2 },
+  '3-5-2': { DEF: 3, MED: 5, DEL: 2 },
+  '3-4-3': { DEF: 3, MED: 4, DEL: 3 },
+};
+
+/**
+ * Si una alineación ({ posicion, es_titular, es_capitan }[]) puede puntuar: exactamente 11
+ * titulares (1 portero y el resto según una formación permitida) y un capitán entre ellos.
+ * Una alineación guardada deja de ser válida si luego sale un titular (venta, cláusula, oferta).
+ */
+export function alineacionValida(jugadores) {
+  const titulares = jugadores.filter(j => j.es_titular);
+  if (titulares.length !== 11) return false;
+  const capitanes = jugadores.filter(j => j.es_capitan);
+  if (capitanes.length !== 1 || !capitanes[0].es_titular) return false;
+  const cuenta = pos => titulares.filter(j => j.posicion === pos).length;
+  if (cuenta('POR') !== 1) return false;
+  return Object.values(FORMACIONES).some(f => cuenta('DEF') === f.DEF && cuenta('MED') === f.MED && cuenta('DEL') === f.DEL);
+}
+
 /** Jornada con las alineaciones cerradas ahora mismo (empezó y aún no está calculada), o null. */
 export async function jornadaConAlineacionesCerradas(db = pool) {
   const { rows } = await db.query(
