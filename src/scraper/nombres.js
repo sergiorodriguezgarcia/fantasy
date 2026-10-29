@@ -24,8 +24,10 @@ export function generarCombinacionesNombre(nombreScraper) {
   // Combinación completa invertida: "NOMBRE1 NOMBRE2 APELLIDO1 APELLIDO2"
   combinaciones.add(`${nombresParte} ${apellidosParte}`);
 
-  // Combinaciones parciales: cada nombre con cada subconjunto de apellidos
-  for (const nombre of nombresTokens) {
+  // Combinaciones parciales: cada nombre (y el nombre compuesto entero, p. ej. "MATEUSZ DAWID",
+  // con o sin apellidos) con cada subconjunto de apellidos
+  const nombres = nombresTokens.length > 1 ? [...nombresTokens, nombresParte] : nombresTokens;
+  for (const nombre of nombres) {
     combinaciones.add(nombre);
     for (let i = 1; i <= apellidosTokens.length; i++) {
       combinaciones.add(`${nombre} ${apellidosTokens.slice(0, i).join(' ')}`);

@@ -107,8 +107,10 @@ export function calcularPuntos(posicion, stats) {
  * Calcula los puntos de todos los jugadores de una jornada
  * y actualiza la columna `puntos` en la tabla estadisticas.
  * Luego recalcula los puntos totales de cada equipo fantasy.
+ * Con `recalcularJugadores: false` solo recalcula los equipos con los puntos de jugador ya
+ * guardados (p. ej. al añadir estadísticas que faltaban sin aplicar cambios de reglas posteriores).
  */
-export async function calcularPuntosJornada(idJornada) {
+export async function calcularPuntosJornada(idJornada, { recalcularJugadores = true } = {}) {
   // Si la jornada ya cerró alineaciones y aún no tiene foto (servicio dormido), tomarla ahora
   await guardarAlineacionesCerradas();
 
@@ -133,7 +135,7 @@ export async function calcularPuntosJornada(idJornada) {
       [idJornada]
     );
 
-    for (const s of stats) {
+    for (const s of recalcularJugadores ? stats : []) {
       const puntos = calcularPuntos(s.posicion, s);
       await client.query(
         `UPDATE estadisticas SET puntos = $1 WHERE id = $2`,
