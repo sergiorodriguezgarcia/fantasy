@@ -605,6 +605,10 @@ export async function resolverSubastasVencidas() {
  * - No crea subastas si ya hay una ventana abierta hoy
  */
 export async function abrirVentanaMercado({ n = 5 } = {}) {
+  // Resolver antes las subastas que cierran a la misma hora: si no, los jugadores recién ganados
+  // aún no están en plantillas y podían volver a salir en la nueva ventana
+  await resolverSubastasVencidas();
+
   // Comprobar si ya se abrió ventana hoy
   const { rows: yaAbierta } = await pool.query(
     `SELECT COUNT(*) AS total FROM subastas
@@ -624,6 +628,7 @@ export async function abrirVentanaMercado({ n = 5 } = {}) {
      FROM jugadores j
      WHERE j.activo = TRUE
        AND j.id NOT IN (SELECT id_jugador FROM plantillas)
+       AND j.id NOT IN (SELECT id_jugador FROM subastas WHERE estado = 'ACTIVA')
      ORDER BY RANDOM()
      LIMIT $1`,
     [n]
