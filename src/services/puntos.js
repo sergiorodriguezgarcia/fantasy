@@ -196,7 +196,18 @@ export async function calcularPuntosJornada(idJornada, { recalcularJugadores = t
       return premio;
     };
 
+    // El saldo negativo se mira la primera vez que se calcula la jornada. Al recalcularla más tarde
+    // (aplazado, acta corregida) se respeta lo decidido entonces: el saldo de hoy no tiene que ver
+    // con esa jornada. Las filas de antes de guardar esto (NULL) usan el saldo actual
+    const { rows: previas } = await client.query(
+      `SELECT id_equipo_fantasy, sin_puntuar_saldo FROM puntuaciones_jornada WHERE id_jornada = $1`,
+      [idJornada]
+    );
+    const sinPuntuarSaldoPrevio = new Map(previas.map(p => [p.id_equipo_fantasy, p.sin_puntuar_saldo]));
+
     for (const equipo of equipos) {
+      const sinPuntuarSaldo = sinPuntuarSaldoPrevio.get(equipo.id) ?? equipo.saldo_disponible < 0;
+
       // Mismo orden que alineacionJornada(): las sustituciones (y lo que se ve en el campo) coinciden
       const { rows: plantilla } = await client.query(
         `SELECT p.id_jugador, p.es_titular, p.es_capitan, j.posicion,
@@ -212,19 +223,20 @@ export async function calcularPuntosJornada(idJornada, { recalcularJugadores = t
       // No puntúa si no tenía alineación guardada (al cierre, si hay foto), si al cierre ya no
       // estaba completa (11 titulares en una formación válida con capitán) o tiene saldo negativo
       const sinAlineacion = conFoto ? !alineadosAlCierre.has(equipo.id) : !equipo.formacion;
-      if (sinAlineacion || !alineacionValida(plantilla) || equipo.saldo_disponible < 0) {
+      if (sinAlineacion || !alineacionValida(plantilla) || sinPuntuarSaldo) {
         await client.query(
           `INSERT INTO puntuaciones_jornada
-             (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla, premio)
+             (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla, premio, sin_puntuar_saldo)
            VALUES ($1, $2, 0, $3, COALESCE(
              (SELECT SUM(j.precio_actual) FROM plantillas p JOIN jugadores j ON j.id = p.id_jugador WHERE p.id_equipo_fantasy = $1), 0
-           ), $4)
+           ), $4, $5)
            ON CONFLICT (id_equipo_fantasy, id_jornada) DO UPDATE
              SET puntos_jornada = 0,
                  puntos_acumulados = EXCLUDED.puntos_acumulados,
                  valor_plantilla = EXCLUDED.valor_plantilla,
-                 premio = EXCLUDED.premio`,
-          [equipo.id, idJornada, await acumuladoAnterior(equipo.id), await pagarPremio(equipo.id, 0)]
+                 premio = EXCLUDED.premio,
+                 sin_puntuar_saldo = EXCLUDED.sin_puntuar_saldo`,
+          [equipo.id, idJornada, await acumuladoAnterior(equipo.id), await pagarPremio(equipo.id, 0), sinPuntuarSaldo]
         );
         continue;
       }
@@ -248,18 +260,36 @@ export async function calcularPuntosJornada(idJornada, { recalcularJugadores = t
 
       await client.query(
         `INSERT INTO puntuaciones_jornada
-           (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla, premio)
-         VALUES ($1, $2, $3, $4, $5, $6)
+           (id_equipo_fantasy, id_jornada, puntos_jornada, puntos_acumulados, valor_plantilla, premio, sin_puntuar_saldo)
+         VALUES ($1, $2, $3, $4, $5, $6, FALSE)
          ON CONFLICT (id_equipo_fantasy, id_jornada) DO UPDATE
            SET puntos_jornada = EXCLUDED.puntos_jornada,
                puntos_acumulados = EXCLUDED.puntos_acumulados,
                valor_plantilla = EXCLUDED.valor_plantilla,
-               premio = EXCLUDED.premio`,
+               premio = EXCLUDED.premio,
+               sin_puntuar_saldo = FALSE`,
         [equipo.id, idJornada, puntosTotales, puntosAcum, valorPlantilla, premio]
       );
 
       totalEquipos++;
     }
+
+    // Si se recalcula una jornada con otras posteriores ya calculadas (p. ej. un aplazado jugado
+    // semanas después), el acumulado de esas jornadas también cambia
+    await client.query(
+      `UPDATE puntuaciones_jornada pj
+       SET puntos_acumulados = s.acumulado
+       FROM (
+         SELECT pj2.id,
+                SUM(pj2.puntos_jornada) OVER (PARTITION BY pj2.id_equipo_fantasy ORDER BY jo.numero) AS acumulado
+         FROM puntuaciones_jornada pj2
+         JOIN jornadas jo ON jo.id = pj2.id_jornada
+       ) s
+       WHERE pj.id = s.id
+         AND pj.id_jornada IN (SELECT id FROM jornadas WHERE numero > $1)
+         AND pj.puntos_acumulados <> s.acumulado`,
+      [jornada.numero]
+    );
 
     await client.query('COMMIT');
     return {

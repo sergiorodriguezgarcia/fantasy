@@ -134,100 +134,155 @@ function calendarioJornada(calendario) {
  * 3. Importa los partidos jugados que faltan (los ya importados no se vuelven a descargar).
  * 4. Calcula puntos y precios y cierra la jornada solo cuando están todos los partidos jugados
  *    e importados. Si hay un aplazado, se cierra igualmente en cuanto la jornada siguiente ha
- *    empezado (el aplazado queda fuera; se puede importar luego desde el admin).
+ *    empezado (el aplazado queda fuera hasta que se juegue: ver recuperarAplazados).
+ * Antes, recupera los aplazados de jornadas ya calculadas que se hayan jugado desde entonces.
  */
 export async function importarJornadaAutomatica() {
   if (importacionAutomaticaEnCurso) return { ok: false, motivo: 'Ya hay una importación automática en curso' };
   importacionAutomaticaEnCurso = true;
   try {
-    const { rows: [{ numero: numJornada }] } = await pool.query(
-      `SELECT COALESCE(
-         (SELECT MIN(numero) FROM jornadas WHERE estado IN ('EN_CURSO', 'PENDIENTE')),
-         (SELECT COALESCE(MAX(numero), 0) + 1 FROM jornadas)
-       ) AS numero`
-    );
-
-    resetSession();
-    const { partidos, calendario } = parseJornada(await fetchJornada(numJornada));
-    if (calendario.length === 0) {
-      return { ok: true, jornada: numJornada, motivo: 'La jornada no tiene partidos publicados' };
-    }
-    const jugados = partidos.filter(p => p.jugado);
-
-    // Crear la jornada en cuanto se publica su calendario (aunque aún no haya previos), con el
-    // cierre de alineaciones en el inicio del primer partido del calendario, tenga o no previo (un
-    // partido del sábado sin previo publicado también cierra). El cierre se actualiza si cambian
-    // los horarios, salvo que ya se haya guardado la foto de las alineaciones. El calendario se
-    // refresca siempre para mostrar los horarios al día.
-    const { rows: [{ id: idJornada, cierre_alineaciones: cierre }] } = await pool.query(
-      `INSERT INTO jornadas (numero, estado, cierre_alineaciones, calendario)
-       VALUES ($1, $2, $3::timestamp AT TIME ZONE 'Europe/Madrid', $4::jsonb)
-       ON CONFLICT (numero) DO UPDATE
-         SET estado = CASE WHEN jornadas.estado = 'PENDIENTE' THEN EXCLUDED.estado ELSE jornadas.estado END,
-             cierre_alineaciones = CASE WHEN jornadas.alineaciones_guardadas THEN jornadas.cierre_alineaciones
-                                        ELSE COALESCE(EXCLUDED.cierre_alineaciones, jornadas.cierre_alineaciones) END,
-             calendario = EXCLUDED.calendario
-       RETURNING id, cierre_alineaciones`,
-      [numJornada, jugados.length > 0 ? 'EN_CURSO' : 'PENDIENTE', primerPartido(calendario),
-       JSON.stringify(calendarioJornada(calendario))]
-    );
-
-    if (jugados.length === 0) {
-      return { ok: true, jornada: numJornada, cierre_alineaciones: cierre, motivo: 'Todavía no hay partidos jugados' };
-    }
-
-    const { rows: yaImportados } = await pool.query(
-      `SELECT cod_acta FROM partidos WHERE id_jornada = $1 AND procesado AND cod_acta IS NOT NULL`,
-      [idJornada]
-    );
-    const importados = new Set(yaImportados.map(p => String(p.cod_acta)));
-
-    const nuevos = [];
-    const errores = [];
-    for (const partido of jugados.filter(p => !importados.has(String(p.codActa)))) {
-      try {
-        await importarPartido(idJornada, partido);
-        nuevos.push(`${partido.equipoLocal} - ${partido.equipoVisitante}`);
-      } catch (err) {
-        console.error(`[CRON] Error en acta ${partido.codActa}: ${err.message}`);
-        errores.push({ codActa: partido.codActa, error: err.message });
-      }
-    }
-
-    // ¿Se puede cerrar la jornada?
-    let motivoCierre = null;
-    if (jugados.length === partidos.length) {
-      motivoCierre = 'todos los partidos jugados';
-    } else {
-      const { partidos: siguientes } = parseJornada(await fetchJornada(numJornada + 1));
-      if (siguientes.some(p => p.jugado)) {
-        motivoCierre = `la jornada ${numJornada + 1} ya ha empezado (${partidos.length - jugados.length} partido(s) sin jugar quedan fuera)`;
-      }
-    }
-
-    let puntuacion = null;
-    if (motivoCierre && errores.length === 0) {
-      puntuacion = await calcularPuntosJornada(idJornada);
-      await actualizarPrecios(idJornada);
-      await pool.query(`UPDATE jornadas SET estado = 'CALCULADA' WHERE id = $1`, [idJornada]);
-      console.log(`[CRON] Jornada ${numJornada} calculada: ${motivoCierre}`);
-    }
-
-    return {
-      ok: true,
-      jornada: numJornada,
-      partidos_jugados: `${jugados.length}/${partidos.length}`,
-      partidos_importados_ahora: nuevos,
-      errores,
-      calculada: puntuacion !== null,
-      motivo: puntuacion
-        ? motivoCierre
-        : errores.length > 0 ? 'Hay actas con errores; se reintentará' : 'Faltan partidos por jugar',
-      puntuacion,
-    };
+    const aplazados = await recuperarAplazados();
+    const resultado = await seguirJornadaEnJuego();
+    return aplazados.length > 0 ? { ...resultado, aplazados } : resultado;
   } finally {
     importacionAutomaticaEnCurso = false;
   }
+}
+
+/**
+ * Partidos aplazados: una jornada calculada con partidos sin jugar en su calendario se vuelve a
+ * mirar en cada pasada. Cuando el aplazado tiene acta se importa (sus estadísticas cuentan en su
+ * jornada original) y se recalculan los puntos y precios de esa jornada, con las alineaciones
+ * guardadas al cierre de entonces. El recálculo solo paga o descuenta la diferencia de premio.
+ */
+async function recuperarAplazados() {
+  const { rows: jornadas } = await pool.query(
+    `SELECT id, numero FROM jornadas
+     WHERE estado = 'CALCULADA' AND calendario @> '[{"jugado": false}]'
+     ORDER BY numero`
+  );
+
+  const resultados = [];
+  for (const { id: idJornada, numero } of jornadas) {
+    try {
+      resetSession();
+      const { partidos, calendario } = parseJornada(await fetchJornada(numero));
+      if (calendario.length === 0) continue;
+      await pool.query(
+        `UPDATE jornadas SET calendario = $2::jsonb WHERE id = $1`,
+        [idJornada, JSON.stringify(calendarioJornada(calendario))]
+      );
+
+      const { rows: yaImportados } = await pool.query(
+        `SELECT cod_acta FROM partidos WHERE id_jornada = $1 AND procesado AND cod_acta IS NOT NULL`,
+        [idJornada]
+      );
+      const importados = new Set(yaImportados.map(p => String(p.cod_acta)));
+      const nuevos = partidos.filter(p => p.jugado && !importados.has(String(p.codActa)));
+      if (nuevos.length === 0) continue;
+
+      for (const partido of nuevos) await importarPartido(idJornada, partido);
+      await calcularPuntosJornada(idJornada);
+      await actualizarPrecios(idJornada);
+
+      const nombres = nuevos.map(p => `${p.equipoLocal} - ${p.equipoVisitante}`);
+      console.log(`[CRON] Jornada ${numero} recalculada con aplazados: ${nombres.join(', ')}`);
+      resultados.push({ jornada: numero, partidos: nombres });
+    } catch (err) {
+      // Se reintenta en la siguiente pasada; no impide seguir con la jornada en juego
+      console.error(`[CRON] Error recuperando aplazados de la jornada ${numero}: ${err.message}`);
+      resultados.push({ jornada: numero, error: err.message });
+    }
+  }
+  return resultados;
+}
+
+async function seguirJornadaEnJuego() {
+  const { rows: [{ numero: numJornada }] } = await pool.query(
+    `SELECT COALESCE(
+       (SELECT MIN(numero) FROM jornadas WHERE estado IN ('EN_CURSO', 'PENDIENTE')),
+       (SELECT COALESCE(MAX(numero), 0) + 1 FROM jornadas)
+     ) AS numero`
+  );
+
+  resetSession();
+  const { partidos, calendario } = parseJornada(await fetchJornada(numJornada));
+  if (calendario.length === 0) {
+    return { ok: true, jornada: numJornada, motivo: 'La jornada no tiene partidos publicados' };
+  }
+  const jugados = partidos.filter(p => p.jugado);
+
+  // Crear la jornada en cuanto se publica su calendario (aunque aún no haya previos), con el
+  // cierre de alineaciones en el inicio del primer partido del calendario, tenga o no previo (un
+  // partido del sábado sin previo publicado también cierra). El cierre se actualiza si cambian
+  // los horarios, salvo que ya se haya guardado la foto de las alineaciones. El calendario se
+  // refresca siempre para mostrar los horarios al día.
+  const { rows: [{ id: idJornada, cierre_alineaciones: cierre }] } = await pool.query(
+    `INSERT INTO jornadas (numero, estado, cierre_alineaciones, calendario)
+     VALUES ($1, $2, $3::timestamp AT TIME ZONE 'Europe/Madrid', $4::jsonb)
+     ON CONFLICT (numero) DO UPDATE
+       SET estado = CASE WHEN jornadas.estado = 'PENDIENTE' THEN EXCLUDED.estado ELSE jornadas.estado END,
+           cierre_alineaciones = CASE WHEN jornadas.alineaciones_guardadas THEN jornadas.cierre_alineaciones
+                                      ELSE COALESCE(EXCLUDED.cierre_alineaciones, jornadas.cierre_alineaciones) END,
+           calendario = EXCLUDED.calendario
+     RETURNING id, cierre_alineaciones`,
+    [numJornada, jugados.length > 0 ? 'EN_CURSO' : 'PENDIENTE', primerPartido(calendario),
+     JSON.stringify(calendarioJornada(calendario))]
+  );
+
+  if (jugados.length === 0) {
+    return { ok: true, jornada: numJornada, cierre_alineaciones: cierre, motivo: 'Todavía no hay partidos jugados' };
+  }
+
+  const { rows: yaImportados } = await pool.query(
+    `SELECT cod_acta FROM partidos WHERE id_jornada = $1 AND procesado AND cod_acta IS NOT NULL`,
+    [idJornada]
+  );
+  const importados = new Set(yaImportados.map(p => String(p.cod_acta)));
+
+  const nuevos = [];
+  const errores = [];
+  for (const partido of jugados.filter(p => !importados.has(String(p.codActa)))) {
+    try {
+      await importarPartido(idJornada, partido);
+      nuevos.push(`${partido.equipoLocal} - ${partido.equipoVisitante}`);
+    } catch (err) {
+      console.error(`[CRON] Error en acta ${partido.codActa}: ${err.message}`);
+      errores.push({ codActa: partido.codActa, error: err.message });
+    }
+  }
+
+  // ¿Se puede cerrar la jornada?
+  let motivoCierre = null;
+  if (jugados.length === partidos.length) {
+    motivoCierre = 'todos los partidos jugados';
+  } else {
+    const { partidos: siguientes } = parseJornada(await fetchJornada(numJornada + 1));
+    if (siguientes.some(p => p.jugado)) {
+      motivoCierre = `la jornada ${numJornada + 1} ya ha empezado (${partidos.length - jugados.length} partido(s) sin jugar quedan fuera)`;
+    }
+  }
+
+  let puntuacion = null;
+  if (motivoCierre && errores.length === 0) {
+    puntuacion = await calcularPuntosJornada(idJornada);
+    await actualizarPrecios(idJornada);
+    await pool.query(`UPDATE jornadas SET estado = 'CALCULADA' WHERE id = $1`, [idJornada]);
+    console.log(`[CRON] Jornada ${numJornada} calculada: ${motivoCierre}`);
+  }
+
+  return {
+    ok: true,
+    jornada: numJornada,
+    partidos_jugados: `${jugados.length}/${partidos.length}`,
+    partidos_importados_ahora: nuevos,
+    errores,
+    calculada: puntuacion !== null,
+    motivo: puntuacion
+      ? motivoCierre
+      : errores.length > 0 ? 'Hay actas con errores; se reintentará' : 'Faltan partidos por jugar',
+    puntuacion,
+  };
 }
 
 /**

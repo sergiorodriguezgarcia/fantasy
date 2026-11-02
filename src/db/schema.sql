@@ -258,6 +258,10 @@ ALTER TABLE jornadas ADD COLUMN IF NOT EXISTS calendario JSONB;
 -- antes de existir los premios: esas no se pagan aunque se recalculen
 ALTER TABLE puntuaciones_jornada ADD COLUMN IF NOT EXISTS premio BIGINT;
 
+-- El equipo no puntuó la jornada por tener saldo negativo al calcularla. Al recalcularla después
+-- (aplazados, actas corregidas) se respeta lo decidido entonces. NULL en las filas anteriores
+ALTER TABLE puntuaciones_jornada ADD COLUMN IF NOT EXISTS sin_puntuar_saldo BOOLEAN;
+
 -- Foto de la plantilla de cada equipo al cerrarse las alineaciones: los puntos de la jornada se
 -- calculan con ella (los fichajes y ventas hechos con la jornada empezada no cuentan)
 CREATE TABLE IF NOT EXISTS alineaciones_jornada (
