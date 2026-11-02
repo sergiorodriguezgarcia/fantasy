@@ -36,3 +36,49 @@ export function generarCombinacionesNombre(nombreScraper) {
 
   return [...combinaciones];
 }
+
+// Palabras que no distinguen a un club de otro (siglas de la entidad, artículos...)
+const PALABRAS_GENERICAS = new Set([
+  'CF', 'CD', 'SD', 'UD', 'AD', 'CP', 'SAD', 'UP', 'CLUB', 'DEPORTIVO', 'DEPORTIVA', 'FUTBOL',
+  'REAL', 'DE', 'DEL', 'LA', 'EL', 'LOS', 'LAS', 'Y',
+]);
+
+/**
+ * Nombre de un equipo → palabras que lo identifican + letra del filial.
+ * Ej: 'S.D. Lenense Proinastur "B"' → { palabras: ['LENENSE', 'PROINASTUR'], letra: 'B' }
+ */
+function claveEquipo(nombre) {
+  const tokens = normalizeName(nombre).replace(/\./g, '').replace(/[^A-Z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+  const letra = tokens.length > 1 && /^[A-Z]$/.test(tokens.at(-1)) ? tokens.pop() : null;
+  const palabras = tokens.filter(t => t.length > 1 && !PALABRAS_GENERICAS.has(t));
+  return { palabras, letra };
+}
+
+/**
+ * Busca el equipo real que corresponde a un nombre de la federación (calendario, actas), que no
+ * siempre se escribe igual que en la BD: 'Ayer C.F. "A"' ↔ 'AYER CF A'.
+ * Casa si las palabras de uno están todas en el otro y la letra del filial no se contradice;
+ * gana el que comparte más palabras. Devuelve el id, o null si no hay ninguno o hay empate.
+ */
+export function buscarEquipoReal(nombre, equipos) {
+  const exacto = equipos.find(e => normalizeName(e.nombre) === normalizeName(nombre));
+  if (exacto) return exacto.id;
+
+  const buscado = claveEquipo(nombre);
+  if (buscado.palabras.length === 0) return null;
+
+  let mejor = null, mejorComunes = 0, empate = false;
+  for (const e of equipos) {
+    const clave = claveEquipo(e.nombre);
+    if (clave.palabras.length === 0) continue;
+    if (buscado.letra && clave.letra && buscado.letra !== clave.letra) continue;
+    const comunes = clave.palabras.filter(p => buscado.palabras.includes(p)).length;
+    const contenido = comunes === clave.palabras.length || comunes === buscado.palabras.length;
+    if (!contenido) continue;
+    // A igualdad de palabras, el que tiene la misma letra de filial gana al que no tiene letra
+    const puntos = comunes * 2 + (buscado.letra && clave.letra === buscado.letra ? 1 : 0);
+    if (puntos > mejorComunes) { mejor = e.id; mejorComunes = puntos; empate = false; }
+    else if (puntos === mejorComunes) empate = true;
+  }
+  return empate ? null : mejor;
+}
