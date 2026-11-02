@@ -1,5 +1,6 @@
 import { pool } from '../db/pool.js';
 import { alineacionJornada } from '../services/alineaciones.js';
+import { normalizeName } from '../scraper/nombres.js';
 
 export async function jornadasRoutes(app) {
 
@@ -34,7 +35,19 @@ export async function jornadasRoutes(app) {
        ORDER BY numero
        LIMIT 1`
     );
-    return rows[0] ?? null;
+    const jornada = rows[0];
+    if (!jornada) return null;
+
+    // El calendario guarda los nombres de la federación; se añade el id del equipo real para poder
+    // abrir su plantilla (null si el club no está dado de alta)
+    const { rows: equipos } = await pool.query(`SELECT id, nombre FROM equipos_reales`);
+    const idPorNombre = new Map(equipos.map(e => [normalizeName(e.nombre), e.id]));
+    jornada.partidos = jornada.partidos.map(p => ({
+      ...p,
+      id_local:     idPorNombre.get(normalizeName(p.local)) ?? null,
+      id_visitante: idPorNombre.get(normalizeName(p.visitante)) ?? null,
+    }));
+    return jornada;
   });
 
   // GET /api/jornadas/:id — detalle de jornada con partidos

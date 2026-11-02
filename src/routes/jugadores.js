@@ -37,7 +37,11 @@ export async function jugadoresRoutes(app) {
              j.cod_jugador,
              EXISTS (
                SELECT 1 FROM plantillas p WHERE p.id_jugador = j.id
-             ) AS en_plantilla
+             ) AS en_plantilla,
+             (SELECT ef.nombre FROM plantillas p
+              JOIN equipos_fantasy ef ON ef.id = p.id_equipo_fantasy
+              WHERE p.id_jugador = j.id
+              LIMIT 1) AS propietario
       FROM jugadores j
       LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
       WHERE ${conditions.join(' AND ')} ${disponibleJoin}
