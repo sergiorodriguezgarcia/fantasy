@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS equipos_reales (
 CREATE TABLE IF NOT EXISTS jugadores (
   id              SERIAL PRIMARY KEY,
   nombre          VARCHAR(150) NOT NULL,
-  posicion        VARCHAR(3) CHECK (posicion IN ('POR', 'DEF', 'MED', 'DEL')),
+  posicion        VARCHAR(3) CHECK (posicion IN ('POR', 'DEF', 'MED', 'DEL', 'ENT')),  -- ENT = entrenador
   id_equipo_real  INTEGER REFERENCES equipos_reales(id) ON DELETE SET NULL,
   cod_jugador     VARCHAR(50),  -- ID en asturfutbol.es (jugador=XXXX)
   precio_actual   BIGINT NOT NULL DEFAULT 5000000,  -- en euros (sin decimales)
@@ -292,6 +292,16 @@ CREATE TABLE IF NOT EXISTS recuperaciones_password (
   creado_en   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_recuperaciones_usuario ON recuperaciones_password(id_usuario, creado_en);
+
+-- Entrenadores: van en jugadores con posicion 'ENT' (uno por equipo real) para ficharse, venderse y
+-- clausularse como cualquier jugador. Puntúan por el resultado de su equipo: 5 victoria, 2 empate
+ALTER TABLE jugadores DROP CONSTRAINT IF EXISTS jugadores_posicion_check;
+ALTER TABLE jugadores ADD CONSTRAINT jugadores_posicion_check
+  CHECK (posicion IN ('POR', 'DEF', 'MED', 'DEL', 'ENT'));
+-- TRUE si el partido de su equipo acabó en empate (lo usa la puntuación de los entrenadores)
+ALTER TABLE estadisticas ADD COLUMN IF NOT EXISTS empate BOOLEAN NOT NULL DEFAULT FALSE;
+INSERT INTO config_mercado (clave, valor) VALUES ('entrenadores_por_ventana', '2')
+ON CONFLICT (clave) DO NOTHING;
 
 -- ─── Índices útiles ──────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_jugadores_equipo ON jugadores(id_equipo_real);

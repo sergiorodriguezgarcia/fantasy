@@ -3,7 +3,7 @@ import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 import { expirarOfertasVencidas } from './ofertas.js';
 import { guardarAlineacionesCerradas } from '../services/alineaciones.js';
 import { avisarSubastaGanada } from '../services/email.js';
-import { plantillaLlena, MENSAJE_PLANTILLA_LLENA } from '../services/plantilla.js';
+import { sinHuecoPara } from '../services/plantilla.js';
 
 // Hora a la que cierran todas las subastas (hora española)
 const HORA_CIERRE = '19:00';
@@ -261,9 +261,8 @@ export async function mercadoRoutes(app) {
     if (subasta.id_vendedor === comprador.id) {
       return reply.code(400).send({ error: 'No puedes pujar en tu propia subasta' });
     }
-    if (await plantillaLlena(comprador.id)) {
-      return reply.code(400).send({ error: MENSAJE_PLANTILLA_LLENA });
-    }
+    const sinHueco = await sinHuecoPara(comprador.id, subasta.id_jugador);
+    if (sinHueco) return reply.code(400).send({ error: sinHueco });
 
     // Mínimo: el valor actual del jugador (o el precio mínimo de la subasta si es mayor)
     const pujaMinima = Number(subasta.puja_minima);
@@ -436,9 +435,10 @@ export async function resolverSubastasVencidas() {
   const ofertasExpiradas = await expirarOfertasVencidas();
 
   const { rows: vencidas } = await pool.query(
-    `SELECT id, tipo, id_jugador, id_vendedor, precio_minimo
-     FROM subastas
-     WHERE estado = 'ACTIVA' AND fecha_cierre <= NOW()`
+    `SELECT s.id, s.tipo, s.id_jugador, s.id_vendedor, s.precio_minimo, j.posicion
+     FROM subastas s
+     JOIN jugadores j ON j.id = s.id_jugador
+     WHERE s.estado = 'ACTIVA' AND s.fecha_cierre <= NOW()`
   );
 
   const resultados = [];
@@ -471,7 +471,7 @@ export async function resolverSubastasVencidas() {
       const mejorPuja = [];
       for (const p of pujas) {
         await client.query(`SELECT id FROM equipos_fantasy WHERE id = $1 FOR UPDATE`, [p.id_equipo_fantasy]);
-        if (!(await plantillaLlena(p.id_equipo_fantasy, client))) {
+        if (!(await sinHuecoPara(p.id_equipo_fantasy, sub.id_jugador, client))) {
           mejorPuja.push(p);
           break;
         }
@@ -566,7 +566,7 @@ export async function resolverSubastasVencidas() {
                  clausula_activa_desde = EXCLUDED.clausula_activa_desde,
                  fecha_fichaje = EXCLUDED.fecha_fichaje`,
           [ganador.id_equipo_fantasy, sub.id_jugador, ganador.monto,
-           clausulaInicial(ganador.monto), finProteccion(fechaFichaje), fechaFichaje]
+           clausulaInicial(ganador.monto, sub.posicion), finProteccion(fechaFichaje), fechaFichaje]
         );
 
         // El valor de mercado no cambia: solo lo actualiza el recálculo tras cada jornada (services/precios.js)
@@ -599,7 +599,8 @@ export async function resolverSubastasVencidas() {
 
 /**
  * Abre la ventana de mercado diaria:
- * - Selecciona agentes libres (jugadores sin propietario activo)
+ * - Selecciona `n` agentes libres (jugadores sin propietario activo) y, además, los entrenadores
+ *   libres que diga config_mercado.entrenadores_por_ventana
  * - Crea subastas de tipo SISTEMA con precio_minimo = precio_actual
  * - Cierre: mañana a las 19:00 hora española
  * - No crea subastas si ya hay una ventana abierta hoy
@@ -622,17 +623,27 @@ export async function abrirVentanaMercado({ n = 5 } = {}) {
   // fecha_cierre = mañana a las 19:00 hora española
   const cierre = await proximoCierre({ diaSiguiente: true });
 
-  // === SUBASTAS para agentes libres ===
-  const { rows: libres } = await pool.query(
+  const { rows: cfgEnt } = await pool.query(
+    `SELECT valor FROM config_mercado WHERE clave = 'entrenadores_por_ventana'`
+  );
+  const nEntrenadores = parseInt(cfgEnt[0]?.valor ?? '2');
+
+  // === SUBASTAS para agentes libres: n jugadores y nEntrenadores entrenadores ===
+  const agentesLibres = (entrenadores, limite) => pool.query(
     `SELECT j.id, j.precio_actual
      FROM jugadores j
      WHERE j.activo = TRUE
+       AND (j.posicion IS NOT DISTINCT FROM 'ENT') = $2
        AND j.id NOT IN (SELECT id_jugador FROM plantillas)
        AND j.id NOT IN (SELECT id_jugador FROM subastas WHERE estado = 'ACTIVA')
      ORDER BY RANDOM()
      LIMIT $1`,
-    [n]
+    [limite, entrenadores]
   );
+  const libres = [
+    ...(await agentesLibres(false, n)).rows,
+    ...(await agentesLibres(true, nEntrenadores)).rows,
+  ];
 
   const creadas = [];
   for (const jugador of libres) {

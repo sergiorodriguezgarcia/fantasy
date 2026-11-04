@@ -105,6 +105,7 @@ export async function jugadoresRoutes(app) {
                   'porteria_cero', e.porteria_cero,
                   'goles_encajados', e.goles_encajados,
                   'victoria', e.victoria,
+                  'empate', e.empate,
                   'es_capitan', e.es_capitan,
                   'puntos', e.puntos,
                   'partido', CASE WHEN pt.id IS NOT NULL

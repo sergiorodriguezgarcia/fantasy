@@ -8,17 +8,19 @@
  *    equipo al instante, sin negociación (clausulazo). El fichaje reinicia la protección.
  *  - El dueño puede subir la cláusula pagando el 100% del incremento (máximo 150M): blindar a un
  *    jugador cuesta lo mismo que la protección que gana.
+ *  - Los entrenadores tienen su propio máximo de cláusula: 50M.
  *  - Cada usuario puede hacer como máximo 4 clausulazos por jornada. El periodo de una jornada va
  *    desde que se calcula una jornada hasta que se calcula la siguiente.
  */
 
 import { pool } from '../db/pool.js';
 import { avisarClausulazo } from './email.js';
-import { plantillaLlena, MENSAJE_PLANTILLA_LLENA } from './plantilla.js';
+import { sinHuecoPara } from './plantilla.js';
 
 export const CLAUSULA = {
   MULTIPLICADOR: 1.5,
   MAXIMO: 150_000_000,
+  MAXIMO_ENTRENADOR: 50_000_000,
   DIAS_PROTECCION: 15,
   COSTE_SUBIDA: 1,      // sobre el incremento
   MAX_POR_JORNADA: 4,
@@ -31,8 +33,12 @@ export class ErrorClausula extends Error {
   }
 }
 
-export function clausulaInicial(precio) {
-  return Math.min(CLAUSULA.MAXIMO, Math.round(Number(precio) * CLAUSULA.MULTIPLICADOR));
+export function clausulaMaxima(posicion) {
+  return posicion === 'ENT' ? CLAUSULA.MAXIMO_ENTRENADOR : CLAUSULA.MAXIMO;
+}
+
+export function clausulaInicial(precio, posicion) {
+  return Math.min(clausulaMaxima(posicion), Math.round(Number(precio) * CLAUSULA.MULTIPLICADOR));
 }
 
 // Fecha (YYYY-MM-DD) a partir de la cual se puede pagar la cláusula de un fichaje hecho en `desde`
@@ -123,7 +129,7 @@ export async function pagarClausula(idUsuario, idJugador) {
     const { rows: [plantilla] } = await client.query(
       `SELECT p.id, p.id_equipo_fantasy, p.clausula_monto, p.clausula_activa_desde,
               (p.clausula_activa_desde <= CURRENT_DATE) AS activa,
-              j.nombre
+              j.nombre, j.posicion
        FROM plantillas p
        JOIN jugadores j ON j.id = p.id_jugador
        WHERE p.id_jugador = $1
@@ -151,7 +157,8 @@ export async function pagarClausula(idUsuario, idJugador) {
     if (saldoComprador < monto) {
       throw new ErrorClausula(`Saldo insuficiente: la cláusula cuesta ${monto.toLocaleString('es-ES')}€`);
     }
-    if (await plantillaLlena(comprador.id, client)) throw new ErrorClausula(MENSAJE_PLANTILLA_LLENA);
+    const sinHueco = await sinHuecoPara(comprador.id, idJugador, client);
+    if (sinHueco) throw new ErrorClausula(sinHueco);
 
     const periodo = await periodoJornada(client);
     const { rows: [{ n: hechos }] } = await client.query(
@@ -180,7 +187,7 @@ export async function pagarClausula(idUsuario, idJugador) {
          (id_equipo_fantasy, id_jugador, es_titular, es_capitan, precio_compra,
           clausula_monto, clausula_activa_desde, fecha_fichaje)
        VALUES ($1, $2, FALSE, FALSE, $3, $4, $5, CURRENT_DATE)`,
-      [comprador.id, idJugador, monto, clausulaInicial(monto), finProteccion()]
+      [comprador.id, idJugador, monto, clausulaInicial(monto, plantilla.posicion), finProteccion()]
     );
 
     await client.query(
@@ -212,9 +219,6 @@ export async function pagarClausula(idUsuario, idJugador) {
 export async function subirClausula(idUsuario, idPlantilla, nuevaClausula) {
   const nueva = Math.round(Number(nuevaClausula));
   if (!Number.isFinite(nueva) || nueva <= 0) throw new ErrorClausula('Importe de cláusula no válido');
-  if (nueva > CLAUSULA.MAXIMO) {
-    throw new ErrorClausula(`La cláusula no puede superar ${CLAUSULA.MAXIMO.toLocaleString('es-ES')}€`);
-  }
 
   const client = await pool.connect();
   try {
@@ -226,10 +230,19 @@ export async function subirClausula(idUsuario, idPlantilla, nuevaClausula) {
     if (!equipo) throw new ErrorClausula('No tienes equipo', 404);
 
     const { rows: [plantilla] } = await client.query(
-      `SELECT id_jugador, clausula_monto FROM plantillas WHERE id = $1 AND id_equipo_fantasy = $2 FOR UPDATE`,
+      `SELECT p.id_jugador, p.clausula_monto, j.posicion
+       FROM plantillas p
+       JOIN jugadores j ON j.id = p.id_jugador
+       WHERE p.id = $1 AND p.id_equipo_fantasy = $2
+       FOR UPDATE OF p`,
       [idPlantilla, equipo.id]
     );
     if (!plantilla) throw new ErrorClausula('Jugador no encontrado en tu plantilla', 404);
+
+    const maximo = clausulaMaxima(plantilla.posicion);
+    if (nueva > maximo) {
+      throw new ErrorClausula(`La cláusula no puede superar ${maximo.toLocaleString('es-ES')}€`);
+    }
 
     const actual = Number(plantilla.clausula_monto);
     if (nueva <= actual) throw new ErrorClausula('Solo puedes subir la cláusula, no bajarla');

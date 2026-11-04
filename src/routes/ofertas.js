@@ -1,7 +1,7 @@
 import { pool } from '../db/pool.js';
 import { clausulaInicial, finProteccion } from '../services/clausulas.js';
 import { guardarAlineacionesCerradas } from '../services/alineaciones.js';
-import { plantillaLlena, MENSAJE_PLANTILLA_LLENA, MAX_JUGADORES } from '../services/plantilla.js';
+import { sinHuecoPara } from '../services/plantilla.js';
 
 /**
  * Marca como EXPIRADA las ofertas de usuario pendientes cuya fecha_expiracion ya pasó y devuelve
@@ -95,9 +95,8 @@ export async function ofertasRoutes(app) {
     if (comprador.saldo_disponible < monto) {
       return reply.code(400).send({ error: 'Saldo insuficiente para esta oferta' });
     }
-    if (await plantillaLlena(comprador.id)) {
-      return reply.code(400).send({ error: MENSAJE_PLANTILLA_LLENA });
-    }
+    const sinHueco = await sinHuecoPara(comprador.id, id_jugador);
+    if (sinHueco) return reply.code(400).send({ error: sinHueco });
 
     // Verificar que el jugador pertenece a OTRO equipo
     const { rows: plant } = await pool.query(
@@ -195,7 +194,7 @@ export async function ofertasRoutes(app) {
 
     const { rows: ofRows } = await pool.query(
       `SELECT o.id, o.id_jugador, o.id_equipo_comprador, o.tipo, o.monto, o.estado, o.fecha_expiracion,
-              j.nombre AS jugador, j.precio_actual
+              j.nombre AS jugador, j.precio_actual, j.posicion
        FROM ofertas o
        JOIN jugadores j ON j.id = o.id_jugador
        WHERE o.id = $1 AND o.id_equipo_vendedor = $2`,
@@ -262,10 +261,10 @@ export async function ofertasRoutes(app) {
       // El comprador puede haber llenado la plantilla después de hacer la oferta
       if (oferta.tipo === 'USUARIO' && compradorId) {
         await client.query(`SELECT id FROM equipos_fantasy WHERE id = $1 FOR UPDATE`, [compradorId]);
-        if (await plantillaLlena(compradorId, client)) {
+        if (await sinHuecoPara(compradorId, oferta.id_jugador, client)) {
           await client.query('ROLLBACK');
           return reply.code(400).send({
-            error: `El comprador ya tiene ${MAX_JUGADORES} jugadores y no puede fichar a ${oferta.jugador}. Rechaza la oferta.`,
+            error: `El comprador no tiene hueco en su plantilla para ${oferta.jugador}. Rechaza la oferta.`,
           });
         }
       }
@@ -305,7 +304,7 @@ export async function ofertasRoutes(app) {
                  clausula_activa_desde = EXCLUDED.clausula_activa_desde,
                  fecha_fichaje = EXCLUDED.fecha_fichaje`,
           [compradorId, oferta.id_jugador, oferta.monto,
-           clausulaInicial(oferta.monto), finProteccion(fechaFichaje), fechaFichaje]
+           clausulaInicial(oferta.monto, oferta.posicion), finProteccion(fechaFichaje), fechaFichaje]
         );
       }
 

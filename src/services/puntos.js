@@ -19,6 +19,9 @@
  * Portería a cero y goles encajados cuentan solo lo que pasó con el jugador en el campo.
  * Una doble amarilla es una expulsión: -3 en total, no -1 por cada amarilla.
  *
+ * Entrenadores (ENT): solo el resultado de su equipo. Victoria 5, empate 2, derrota 0. No pueden
+ * ser capitán y suman siempre que estén en la plantilla (no ocupan hueco en el once).
+ *
  * Premio: cada equipo cobra puntos_jornada × 100.000€ al calcularse la jornada.
  */
 
@@ -39,6 +42,8 @@ const PUNTOS = {
   DEL: { gol: 4, porteriaCero: 0, golPropio: -2, penalizacionEncajado: -1, cadaXEncajados: 2, amarilla: -1, roja: -3, jugar60: 2, jugarMenos60: 1, victoria: 1 },
 };
 
+const PUNTOS_ENTRENADOR = { victoria: 5, empate: 2, derrota: 0 };
+
 const plural = (n, singular, pluralTxt = `${singular}s`) => `${n} ${n === 1 ? singular : pluralTxt}`;
 
 /**
@@ -47,6 +52,13 @@ const plural = (n, singular, pluralTxt = `${singular}s`) => `${n} ${n === 1 ? si
  * Es la única fuente de las reglas: el frontend pinta este desglose tal cual.
  */
 export function desglosarPuntos(posicion, stats) {
+  if (posicion === 'ENT') {
+    const [concepto, puntos] = stats.victoria ? ['Victoria del equipo', PUNTOS_ENTRENADOR.victoria]
+      : stats.empate ? ['Empate del equipo', PUNTOS_ENTRENADOR.empate]
+      : ['Derrota del equipo', PUNTOS_ENTRENADOR.derrota];
+    return { lineas: [{ concepto, puntos }], total: puntos };
+  }
+
   const tabla = PUNTOS[posicion] ?? PUNTOS.DEL;
   const minutos = stats.minutos_jugados ?? 0;
   const lineas = [];
@@ -127,7 +139,7 @@ export async function calcularPuntosJornada(idJornada, { recalcularJugadores = t
     // 1. Calcular puntos por estadística individual
     const { rows: stats } = await client.query(
       `SELECT e.id, e.minutos_jugados, e.goles, e.goles_propio,
-              e.amarillas, e.rojas, e.porteria_cero, e.goles_encajados, e.victoria,
+              e.amarillas, e.rojas, e.porteria_cero, e.goles_encajados, e.victoria, e.empate,
               j.posicion
        FROM estadisticas e
        JOIN jugadores j ON j.id = e.id_jugador

@@ -21,8 +21,10 @@ export const FORMACIONES = {
  * Si una alineación ({ posicion, es_titular, es_capitan }[]) puede puntuar: exactamente 11
  * titulares (1 portero y el resto según una formación permitida) y un capitán entre ellos.
  * Una alineación guardada deja de ser válida si luego sale un titular (venta, cláusula, oferta).
+ * El entrenador no cuenta: no ocupa hueco en el once.
  */
-export function alineacionValida(jugadores) {
+export function alineacionValida(plantilla) {
+  const jugadores = plantilla.filter(j => j.posicion !== 'ENT');
   const titulares = jugadores.filter(j => j.es_titular);
   if (titulares.length !== 11) return false;
   const capitanes = jugadores.filter(j => j.es_capitan);
@@ -118,10 +120,13 @@ export async function origenAlineacion(idJornada, paramJornada, db = pool) {
  * - cada titular que no jugó (0 min) lo sustituye el primer suplente de su posición que sí jugó;
  *   cada suplente solo puede sustituir a uno
  * - el capitán puntúa ×2 (si no jugó, el doble pasa a quien entra por él)
- * Devuelve { total, campo, banquillo }: en `campo` cada hueco titular con el jugador que puntúa en
- * él (`entra_por` = titular sustituido) y sus puntos efectivos; en `banquillo` el resto.
+ * - el entrenador no entra en el once: suma sus puntos siempre (sin capitanía)
+ * Devuelve { total, campo, banquillo, entrenador }: en `campo` cada hueco titular con el jugador
+ * que puntúa en él (`entra_por` = titular sustituido) y sus puntos efectivos; en `banquillo` el
+ * resto de jugadores; `entrenador` (o null) con sus puntos en `puntos_campo`.
  */
-export function aplicarSustituciones(jugadores) {
+export function aplicarSustituciones(plantilla) {
+  const jugadores = plantilla.filter(j => j.posicion !== 'ENT');
   const titulares = jugadores.filter(j => j.es_titular);
   const suplentes = jugadores.filter(j => !j.es_titular);
   const usados = new Set();
@@ -153,7 +158,11 @@ export function aplicarSustituciones(jugadores) {
   const enCampo = new Set(campo.map(j => j.id_jugador));
   const banquillo = jugadores.filter(j => !enCampo.has(j.id_jugador));
 
-  return { total, campo, banquillo };
+  const ent = plantilla.find(j => j.posicion === 'ENT');
+  const entrenador = ent ? { ...ent, es_capitan: false, puntos_campo: ent.puntos ?? 0 } : null;
+  total += entrenador?.puntos_campo ?? 0;
+
+  return { total, campo, banquillo, entrenador };
 }
 
 /**
@@ -165,7 +174,7 @@ export async function alineacionJornada(idEquipo, idJornada, db = pool) {
   const { rows: jugadores } = await db.query(
     `SELECT j.id AS id_jugador, j.nombre, j.posicion, er.nombre AS equipo_real,
             p.es_titular, p.es_capitan,
-            e.minutos_jugados, e.goles, e.amarillas, e.rojas, e.porteria_cero, e.puntos
+            e.minutos_jugados, e.goles, e.amarillas, e.rojas, e.porteria_cero, e.victoria, e.empate, e.puntos
      FROM ${tabla} p
      JOIN jugadores j ON j.id = p.id_jugador
      LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
@@ -175,9 +184,9 @@ export async function alineacionJornada(idEquipo, idJornada, db = pool) {
     [idEquipo, idJornada]
   );
 
-  const { campo, banquillo } = aplicarSustituciones(jugadores);
+  const { campo, banquillo, entrenador } = aplicarSustituciones(jugadores);
   const cuenta = pos => campo.filter(j => j.posicion === pos).length;
-  return { formacion: `${cuenta('DEF')}-${cuenta('MED')}-${cuenta('DEL')}`, campo, banquillo };
+  return { formacion: `${cuenta('DEF')}-${cuenta('MED')}-${cuenta('DEL')}`, campo, banquillo, entrenador };
 }
 
 /**

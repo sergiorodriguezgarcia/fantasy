@@ -12,11 +12,12 @@
 
 import { pool } from '../db/pool.js';
 import { calcularPuntosJornada, calcularPuntos } from '../services/puntos.js';
-import { actualizarPrecios } from '../services/precios.js';
+import { actualizarPrecios, PRECIO_MAXIMO_ENTRENADOR } from '../services/precios.js';
 import { abrirVentanaMercado } from './mercado.js';
 import { liberarJugadorDelMercado } from '../services/clausulas.js';
 import { fetchJornada, fetchActa } from '../scraper/fetcher.js';
 import { parseJornada, parseActa } from '../scraper/parser.js';
+import { guardarEstadisticasEntrenadores, PRECIO_INICIAL_ENTRENADOR } from '../services/entrenadores.js';
 
 export async function adminRoutes(app) {
 
@@ -104,7 +105,11 @@ export async function adminRoutes(app) {
     if (!nombre || !posicion) {
       return reply.code(400).send({ error: 'nombre y posicion son obligatorios' });
     }
-    const precio = precio_inicial ?? 5_000_000;
+    const esEntrenador = posicion.toUpperCase() === 'ENT';
+    const precio = precio_inicial ?? (esEntrenador ? PRECIO_INICIAL_ENTRENADOR : 5_000_000);
+    if (esEntrenador && precio > PRECIO_MAXIMO_ENTRENADOR) {
+      return reply.code(400).send({ error: `Un entrenador no puede valer más de ${PRECIO_MAXIMO_ENTRENADOR.toLocaleString('es-ES')}€` });
+    }
     const { rows } = await pool.query(
       `INSERT INTO jugadores (nombre, posicion, id_equipo_real, cod_jugador, precio_actual, precio_inicial)
        VALUES ($1, $2, $3, $4, $5, $5) RETURNING id`,
@@ -127,6 +132,13 @@ export async function adminRoutes(app) {
     if (activo !== undefined) { params.push(activo); sets.push(`activo = $${params.length}`); }
 
     if (sets.length === 0) return reply.code(400).send({ error: 'Sin campos a actualizar' });
+
+    if (precio_actual !== undefined && Number(precio_actual) > PRECIO_MAXIMO_ENTRENADOR) {
+      const { rows: [actual] } = await pool.query(`SELECT posicion FROM jugadores WHERE id = $1`, [id]);
+      if ((posicion?.toUpperCase() ?? actual?.posicion) === 'ENT') {
+        return reply.code(400).send({ error: `Un entrenador no puede valer más de ${PRECIO_MAXIMO_ENTRENADOR.toLocaleString('es-ES')}€` });
+      }
+    }
 
     params.push(id);
     await pool.query(`UPDATE jugadores SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
@@ -446,6 +458,12 @@ export async function adminRoutes(app) {
           }
         }
 
+        await guardarEstadisticasEntrenadores(client, {
+          idJornada, idPartido,
+          nombreLocal: acta.equipoLocal.nombre, nombreVisitante: acta.equipoVisitante.nombre,
+          golesLocal, golesVisitante,
+        });
+
         await client.query('COMMIT');
         resumen.partidos_importados++;
       } catch (err) {
@@ -500,6 +518,7 @@ export async function adminRoutes(app) {
        LEFT JOIN estadisticas e
               ON e.id_jugador = j.id AND e.id_jornada = $1
        WHERE j.activo = true
+         AND j.posicion IS DISTINCT FROM 'ENT'  -- los entrenadores puntúan solo por el marcador
          AND (UPPER(er.nombre) = UPPER($2) OR UPPER(er.nombre) = UPPER($3))
        ORDER BY er.nombre, j.nombre`,
       [partido.id_jornada, partido.nombre_local, partido.nombre_visitante]
@@ -642,6 +661,13 @@ export async function adminRoutes(app) {
         statRows.push(eRow[0].id);
       }
 
+      // Los entrenadores puntúan solo por el marcador (lo que llegue para ellos en `jugadores` se pisa)
+      await guardarEstadisticasEntrenadores(client, {
+        idJornada: id_jornada, idPartido,
+        nombreLocal: nombre_local, nombreVisitante: nombre_visitante,
+        golesLocal: goles_local, golesVisitante: goles_visitante,
+      });
+
       await client.query('COMMIT');
       return { ok: true, id_partido: idPartido, estadisticas_insertadas: statRows.length };
     } catch (err) {
@@ -664,7 +690,7 @@ export async function adminRoutes(app) {
     const { rows: stats } = await pool.query(
       `SELECT e.id_jugador, j.nombre, j.posicion, er.nombre AS equipo_real,
               e.minutos_jugados, e.goles, e.goles_propio,
-              e.amarillas, e.rojas, e.porteria_cero, e.goles_encajados, e.victoria
+              e.amarillas, e.rojas, e.porteria_cero, e.goles_encajados, e.victoria, e.empate
        FROM estadisticas e
        JOIN jugadores j ON j.id = e.id_jugador
        JOIN equipos_reales er ON er.id = j.id_equipo_real
@@ -762,9 +788,10 @@ export async function adminRoutes(app) {
 
   // PUT /api/admin/mercado/config — actualizar configuración del mercado
   app.put('/mercado/config', { preHandler: app.requireAdmin }, async (req, reply) => {
-    const { jugadores_por_ventana, hora_apertura, duracion_horas } = req.body ?? {};
+    const { jugadores_por_ventana, entrenadores_por_ventana, hora_apertura, duracion_horas } = req.body ?? {};
     const updates = [];
     if (jugadores_por_ventana !== undefined) updates.push(['jugadores_por_ventana', String(parseInt(jugadores_por_ventana))]);
+    if (entrenadores_por_ventana !== undefined) updates.push(['entrenadores_por_ventana', String(parseInt(entrenadores_por_ventana))]);
     if (hora_apertura !== undefined) updates.push(['hora_apertura', String(parseInt(hora_apertura))]);
     if (duracion_horas !== undefined) updates.push(['duracion_horas', String(parseInt(duracion_horas))]);
     if (updates.length === 0) return reply.code(400).send({ error: 'Sin campos a actualizar' });

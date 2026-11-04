@@ -3,29 +3,33 @@
  *
  * Fórmula:
  *   nuevo_precio = precio_actual × (1 + puntos_jornada × FACTOR_AJUSTE)
- *   con un mínimo de PRECIO_MINIMO (500.000€)
+ *   con un mínimo de PRECIO_MINIMO (500.000€) y, en los entrenadores, un máximo de
+ *   PRECIO_MAXIMO_ENTRENADOR (10.000.000€)
  *
  * Si el jugador no jugó esta jornada, precio no cambia.
  *
  * Tras actualizar precios, también se recalculan las cláusulas de rescisión
  * de los jugadores en plantillas fantasy:
- *   nueva_clausula_minima = nuevo_precio × 1.5  (máximo 150M)
+ *   nueva_clausula_minima = nuevo_precio × 1.5  (máximo 150M; 50M en los entrenadores)
  *   Si el propietario había subido la cláusula por encima, se mantiene la más alta.
  */
 
 import { pool } from '../db/pool.js';
-import { clausulaInicial, CLAUSULA } from './clausulas.js';
+import { clausulaInicial, clausulaMaxima } from './clausulas.js';
 
 const FACTOR_AJUSTE = 0.02;   // 2% por punto
 const PRECIO_MINIMO = 500_000; // 500K€
+export const PRECIO_MAXIMO_ENTRENADOR = 10_000_000;
+
+const precioMaximo = posicion => (posicion === 'ENT' ? PRECIO_MAXIMO_ENTRENADOR : Infinity);
 
 /** Precio tras una jornada en la que el jugador sumó `puntos`. */
-export function calcularNuevoPrecio(precio, puntos) {
+export function calcularNuevoPrecio(precio, puntos, posicion) {
   const factor = 1 + (puntos ?? 0) * FACTOR_AJUSTE;
-  return Math.max(
+  return Math.min(precioMaximo(posicion), Math.max(
     PRECIO_MINIMO,
     Math.round(precio * factor / 100_000) * 100_000 // redondear a 100K
-  );
+  ));
 }
 
 /**
@@ -63,7 +67,7 @@ export async function actualizarPrecios(idJornada) {
     const ids = [...new Set([...puntosJornada.keys(), ...yaCalculados.map(r => r.id_jugador)])];
 
     const { rows: jugadores } = await client.query(
-      `SELECT id, precio_inicial, precio_actual FROM jugadores WHERE id = ANY($1) FOR UPDATE`, [ids]
+      `SELECT id, posicion, precio_inicial, precio_actual FROM jugadores WHERE id = ANY($1) FOR UPDATE`, [ids]
     );
 
     // Historial de esos jugadores en orden de jornada, con los puntos de cada una
@@ -99,7 +103,7 @@ export async function actualizarPrecios(idJornada) {
 
       let precio = base;
       if (puntosJornada.has(j.id)) {
-        precio = calcularNuevoPrecio(base, puntosJornada.get(j.id));
+        precio = calcularNuevoPrecio(base, puntosJornada.get(j.id), j.posicion);
         await client.query(
           `INSERT INTO historial_precios (id_jugador, id_jornada, precio)
            VALUES ($1, $2, $3)
@@ -114,12 +118,12 @@ export async function actualizarPrecios(idJornada) {
       // Rehacer las jornadas posteriores ya calculadas encima del nuevo valor
       for (const f of posteriores) {
         if (f.puntos == null) continue;
-        precio = calcularNuevoPrecio(precio, f.puntos);
+        precio = calcularNuevoPrecio(precio, f.puntos, j.posicion);
         await client.query(`UPDATE historial_precios SET precio = $1 WHERE id = $2`, [precio, f.id]);
       }
 
       // Conservar cualquier ajuste manual hecho después del último cálculo
-      const nuevoPrecio = Math.max(PRECIO_MINIMO, actual + precio - finAnterior);
+      const nuevoPrecio = Math.min(precioMaximo(j.posicion), Math.max(PRECIO_MINIMO, actual + precio - finAnterior));
       if (nuevoPrecio !== actual) {
         await client.query(
           `UPDATE jugadores SET precio_actual = $1 WHERE id = $2`,
@@ -132,7 +136,7 @@ export async function actualizarPrecios(idJornada) {
         `UPDATE plantillas
          SET clausula_monto = LEAST(GREATEST(clausula_monto, $1), $3)
          WHERE id_jugador = $2`,
-        [clausulaInicial(nuevoPrecio), j.id, CLAUSULA.MAXIMO]
+        [clausulaInicial(nuevoPrecio, j.posicion), j.id, clausulaMaxima(j.posicion)]
       );
     }
 

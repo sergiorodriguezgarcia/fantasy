@@ -12,6 +12,7 @@
     "create-admin": "node src/db/create-admin.js",
     "fotos": "node scripts/importar-fotos.js",
     "fotos:completar": "node scripts/completar-fotos.js",
+    "entrenadores": "node scripts/importar-entrenadores.js",
     "clausulas:revertir": "node scripts/revertir-subidas-clausula.js",
     "precios:recalcular-subastas": "node scripts/recalcular-precios-subastas.js",
     "puntos:anular-incompletas": "node scripts/anular-puntos-alineacion-incompleta.js"

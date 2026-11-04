@@ -14,6 +14,7 @@ import { calcularPuntosJornada } from '../services/puntos.js';
 import { actualizarPrecios } from '../services/precios.js';
 import { normalizeName, generarCombinacionesNombre } from '../scraper/nombres.js';
 import { primerPartido } from '../services/alineaciones.js';
+import { guardarEstadisticasEntrenadores } from '../services/entrenadores.js';
 
 export async function cronRoutes(app) {
 
@@ -475,6 +476,12 @@ async function importarPartido(idJornada, partido) {
         );
       }
     }
+
+    await guardarEstadisticasEntrenadores(client, {
+      idJornada, idPartido,
+      nombreLocal: acta.equipoLocal.nombre, nombreVisitante: acta.equipoVisitante.nombre,
+      golesLocal, golesVisitante,
+    });
 
     await client.query('COMMIT');
   } catch (err) {

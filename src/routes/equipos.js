@@ -156,6 +156,9 @@ export async function equiposRoutes(app) {
     if (jugadoresTitulares.length !== 11) {
       return reply.code(400).send({ error: 'Alguno de los titulares no pertenece a tu plantilla' });
     }
+    if (jugadoresTitulares.some(j => j.posicion === 'ENT')) {
+      return reply.code(400).send({ error: 'El entrenador no juega: no puede ser titular ni capitán' });
+    }
 
     // Validar composición por posición
     const cuota = FORMACIONES[formacion];

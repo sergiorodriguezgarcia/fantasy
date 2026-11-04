@@ -99,6 +99,7 @@ export function parseActa(html, codActa) {
 
     equiposData.push({
       nombre: texto,
+      entrenador: parseEntrenador($, descDiv),
       jugadores: [...titulares, ...suplentes],
       goles: [],
       tarjetas: [],
@@ -162,6 +163,16 @@ function parsePlayers($, table, esTitular) {
     if (nombre) jugadores.push({ id, nombre, dorsal, esTitular, minutosJugados: esTitular ? 90 : 0, foto });
   });
   return jugadores;
+}
+
+// Entrenador del equipo en el acta: { nombre, foto } o null si no presenta. El acta no da su código
+function parseEntrenador($, descDiv) {
+  const h5 = descDiv.find('h5').filter((_, h) => $(h).find('strong').text().includes('Entrenador')).first();
+  const tds = h5.find('table td');
+  const nombre = tds.eq(1).text().trim();
+  if (!nombre || /no presenta/i.test(nombre)) return null;
+  const imgSrc = tds.eq(0).find('img').attr('src') ?? '';
+  return { nombre, foto: imgSrc.startsWith('data:image') ? imgSrc : null };
 }
 
 function parseTarjetas($, table) {
