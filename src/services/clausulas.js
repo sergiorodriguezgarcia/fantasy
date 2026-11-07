@@ -11,6 +11,8 @@
  *  - Los entrenadores tienen su propio máximo de cláusula: 50M.
  *  - Cada usuario puede hacer como máximo 4 clausulazos por jornada. El periodo de una jornada va
  *    desde que se calcula una jornada hasta que se calcula la siguiente.
+ *  - Los clausulazos se cierran 24 h antes del primer partido de cada jornada y se reabren cuando
+ *    esa jornada se calcula.
  */
 
 import { pool } from '../db/pool.js';
@@ -24,6 +26,7 @@ export const CLAUSULA = {
   DIAS_PROTECCION: 15,
   COSTE_SUBIDA: 1,      // sobre el incremento
   MAX_POR_JORNADA: 4,
+  HORAS_CIERRE: 24,     // antes del primer partido de la jornada
 };
 
 export class ErrorClausula extends Error {
@@ -56,6 +59,21 @@ export async function periodoJornada(db = pool) {
     `SELECT COALESCE(MAX(numero), 0) AS periodo FROM jornadas WHERE estado = 'CALCULADA'`
   );
   return Number(rows[0].periodo);
+}
+
+/**
+ * Jornada con los clausulazos cerrados ahora mismo ({ numero, desde }), o null. Cierran
+ * HORAS_CIERRE antes del primer partido (cierre_alineaciones) y siguen cerrados hasta que se calcula.
+ */
+export async function cierreClausulazos(db = pool) {
+  const { rows } = await db.query(
+    `SELECT numero, cierre_alineaciones - make_interval(hours => $1) AS desde FROM jornadas
+     WHERE cierre_alineaciones - make_interval(hours => $1) <= NOW() AND estado <> 'CALCULADA'
+     ORDER BY cierre_alineaciones
+     LIMIT 1`,
+    [CLAUSULA.HORAS_CIERRE]
+  );
+  return rows[0] ?? null;
 }
 
 export async function clausulazosRestantes(idEquipo, db = pool) {
@@ -124,6 +142,14 @@ export async function pagarClausula(idUsuario, idJugador) {
       `SELECT id FROM equipos_fantasy WHERE id_usuario = $1`, [idUsuario]
     );
     if (!comprador) throw new ErrorClausula('No tienes equipo', 404);
+
+    const cierre = await cierreClausulazos(client);
+    if (cierre) {
+      throw new ErrorClausula(
+        `Los clausulazos están cerrados hasta que se calcule la jornada ${cierre.numero} ` +
+        `(cierran ${CLAUSULA.HORAS_CIERRE} h antes de su primer partido)`
+      );
+    }
 
     // Bloquear la fila de plantilla: evita que dos usuarios paguen la misma cláusula a la vez
     const { rows: [plantilla] } = await client.query(

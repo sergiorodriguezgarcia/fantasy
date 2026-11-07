@@ -1,5 +1,5 @@
 import { pool } from '../db/pool.js';
-import { clausulazosRestantes } from '../services/clausulas.js';
+import { clausulazosRestantes, cierreClausulazos } from '../services/clausulas.js';
 import { desglosarPuntos } from '../services/puntos.js';
 
 export async function jugadoresRoutes(app) {
@@ -146,6 +146,7 @@ export async function jugadoresRoutes(app) {
       if (ef.length > 0) {
         jugador.es_mio = jugador.equipo_fantasy?.id === ef[0].id;
         jugador.clausulazos_restantes = await clausulazosRestantes(ef[0].id);
+        jugador.clausulazos_cerrados = await cierreClausulazos();
       }
     } catch { /* sin token: solo datos públicos */ }
 
