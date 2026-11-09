@@ -62,6 +62,55 @@ export function parseJornada(html) {
   return { jornada, partidos, calendario };
 }
 
+/**
+ * Clasificación del grupo (NFG_VisClasificacion). Cada fila: franja de color (zona de ascenso/
+ * promoción/descenso), posición, equipo, puntos, J/G/E/P en casa y fuera, GF, GC, últimos
+ * resultados (spans con title Ganado/Empatado/Perdido) y sanción.
+ * La página repite la tabla; se queda con la primera aparición de cada equipo.
+ * zona: nombre de la franja según la leyenda de la página ('Ascenso', 'Promoción'...) o null.
+ */
+export function parseClasificacion(html) {
+  const $ = cheerio.load(html);
+  const filas = [];
+  const vistos = new Set();
+
+  // Leyenda: <td bgcolor=#8AFF50>&nbsp;</td> <td>&nbsp;Ascenso</td> ...
+  const zonas = {};
+  $('td[bgcolor]').each((_, td) => {
+    const nombre = $(td).next('td').text().replace(/ /g, ' ').trim();
+    if (nombre) zonas[($(td).attr('bgcolor') ?? '').toUpperCase()] = nombre;
+  });
+
+  $('tr').each((_, trEl) => {
+    const tds = $(trEl).children('td');
+    if (tds.length < 15) return;
+    const enlace = tds.eq(2).find('a[href*="codequipo="]').first();
+    const codEquipo = (enlace.attr('href') ?? '').match(/codequipo=(\d+)/i)?.[1];
+    if (!codEquipo || vistos.has(codEquipo)) return;
+    vistos.add(codEquipo);
+
+    const num = (i) => parseInt(tds.eq(i).text().replace(/ /g, '').trim()) || 0;
+    const color = (tds.eq(0).attr('style') ?? '').match(/background-color:\s*(#[0-9a-f]{3,6})/i)?.[1] ?? null;
+    const ultimos = tds.eq(14).find('span[title]').map((_, s) => $(s).text().trim()).get().join('');
+
+    filas.push({
+      posicion:      num(1),
+      equipo:        enlace.text().replace(/\s+/g, ' ').trim(),
+      puntos:        num(3),
+      jugados:       num(4) + num(8),
+      ganados:       num(5) + num(9),
+      empatados:     num(6) + num(10),
+      perdidos:      num(7) + num(11),
+      goles_favor:   num(12),
+      goles_contra:  num(13),
+      ultimos,
+      zona:          color ? zonas[color.toUpperCase()] ?? null : null,
+    });
+  });
+
+  return filas;
+}
+
 // URL del escudo, o null si el club no tiene (la web pone una imagen genérica)
 function escudo(img) {
   const src = img.attr('src')?.trim();

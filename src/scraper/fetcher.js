@@ -94,6 +94,20 @@ export async function fetchActa(codActa) {
   return curlGet(url);
 }
 
+// Clasificación actual del grupo (NFG_CmpClasificacion devuelve vacío; esta es la que enlaza la web)
+export async function fetchClasificacion() {
+  await initSession();
+  await delay(CONFIG.DELAY_MS);
+
+  const url =
+    `${CONFIG.BASE_URL}/NPcd/NFG_VisClasificacion` +
+    `?cod_primaria=${CONFIG.COD_PRIMARIA}` +
+    `&codcompeticion=${CONFIG.COD_COMPETICION}` +
+    `&codgrupo=${CONFIG.COD_GRUPO}`;
+
+  return curlGet(url);
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
