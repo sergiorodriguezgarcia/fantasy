@@ -137,6 +137,12 @@ export async function jugadoresRoutes(app) {
       e.desglose = lineas;
     }
 
+    // Jornadas ya jugadas, para marcar en el historial las que no disputó
+    const { rows: disputadas } = await pool.query(
+      `SELECT numero FROM jornadas WHERE estado IN ('CERRADA', 'CALCULADA') ORDER BY numero`
+    );
+    jugador.jornadas_disputadas = disputadas.map(r => r.numero);
+
     // La ruta es pública; si viene con token se indica si el jugador es suyo y cuántos clausulazos le quedan
     try {
       await req.jwtVerify();

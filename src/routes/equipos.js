@@ -26,7 +26,16 @@ export async function equiposRoutes(app) {
               er.nombre AS equipo_real, j.precio_actual,
               p.es_titular, p.es_capitan, p.fecha_fichaje, p.precio_compra,
               p.clausula_monto, p.clausula_activa_desde,
-              (p.clausula_activa_desde <= CURRENT_DATE) AS clausula_activa
+              (p.clausula_activa_desde <= CURRENT_DATE) AS clausula_activa,
+              COALESCE((SELECT SUM(e.puntos) FROM estadisticas e WHERE e.id_jugador = j.id), 0)::int AS puntos_total,
+              -- Puntos en las 5 últimas jornadas calculadas (null si no jugó), de la más antigua a la última
+              (SELECT json_agg(json_build_object('jornada', u.numero, 'puntos', u.puntos) ORDER BY u.numero)
+               FROM (SELECT jo.numero, e.puntos
+                     FROM jornadas jo
+                     LEFT JOIN estadisticas e ON e.id_jornada = jo.id AND e.id_jugador = j.id
+                     WHERE jo.estado = 'CALCULADA'
+                     ORDER BY jo.numero DESC
+                     LIMIT 5) u) AS ultimas_jornadas
        FROM plantillas p
        JOIN jugadores j ON j.id = p.id_jugador
        LEFT JOIN equipos_reales er ON er.id = j.id_equipo_real
